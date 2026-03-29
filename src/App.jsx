@@ -3,6 +3,7 @@ import { Hand, MessageSquareText, X } from 'lucide-react'
 import { io } from 'socket.io-client'
 import { DrawingCanvas } from './components/DrawingCanvas'
 import { GestureController } from './components/GestureController'
+import { OpenCvGestureBridge } from './components/OpenCvGestureBridge'
 import { PopupMenu } from './components/PopupMenu'
 import { VoicePanel } from './components/VoicePanel'
 import { useSpeechTranscription } from './hooks/useSpeechTranscription'
@@ -369,7 +370,7 @@ function App() {
               {isScreenSharing ? (
                 <video ref={screenVideoRef} autoPlay playsInline muted className="h-full w-full object-contain" />
               ) : (
-                <div className="flex h-full items-center justify-center text-center text-[11px] text-slate-400">Live camera stream placeholder</div>
+                <OpenCvGestureBridge />
               )}
             </div>
             {screenShareError ? <p className="mt-2 text-[11px] text-rose-300">{screenShareError}</p> : null}
