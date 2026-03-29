@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import PropTypes from 'prop-types'
 
 export const GESTURE_STATES = {
@@ -49,17 +49,36 @@ export function OpenCvGestureBridge({
   const [frameToken, setFrameToken] = useState(Date.now())
   const [connectionMessage, setConnectionMessage] = useState('Waiting for Python/OpenCV gesture bridge...')
   const [cameraPermissionMessage, setCameraPermissionMessage] = useState('')
+  const [cameraStream, setCameraStream] = useState(null)
+  const [useBrowserCamera, setUseBrowserCamera] = useState(false)
+  const cameraVideoRef = useRef(null)
 
   const requestCameraPermission = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-      stream.getTracks().forEach((track) => track.stop())
+      setCameraStream((currentStream) => {
+        currentStream?.getTracks().forEach((track) => track.stop())
+        return stream
+      })
+      setUseBrowserCamera(true)
       setCameraPermissionMessage('Camera permission granted.')
     } catch (cameraError) {
       const message = cameraError instanceof Error ? cameraError.message : String(cameraError)
       setCameraPermissionMessage(`Camera permission failed: ${message}`)
     }
   }
+
+  useEffect(() => {
+    if (!cameraVideoRef.current) return
+    cameraVideoRef.current.srcObject = cameraStream
+  }, [cameraStream])
+
+  useEffect(
+    () => () => {
+      cameraStream?.getTracks().forEach((track) => track.stop())
+    },
+    [cameraStream],
+  )
 
   useEffect(() => {
     let isMounted = true
@@ -119,14 +138,18 @@ export function OpenCvGestureBridge({
         </button>
       </div>
       <div className="relative flex-1 overflow-hidden rounded-xl border border-dashed border-slate-600 bg-slate-800/60">
-        <img
-          src={frameSrc}
-          alt="Hand tracking feed"
-          className="h-full w-full object-contain"
-          onError={() => {
-            setConnectionMessage('Waiting for Python/OpenCV gesture bridge...')
-          }}
-        />
+        {useBrowserCamera ? (
+          <video ref={cameraVideoRef} autoPlay playsInline muted className="h-full w-full object-contain" />
+        ) : (
+          <img
+            src={frameSrc}
+            alt="Hand tracking feed"
+            className="h-full w-full object-contain"
+            onError={() => {
+              setConnectionMessage('Waiting for Python/OpenCV gesture bridge...')
+            }}
+          />
+        )}
         <div className="pointer-events-none absolute inset-x-3 top-3 flex flex-col gap-2">
           <span className="w-fit rounded-lg bg-slate-950/70 px-3 py-1 text-[11px] font-medium text-slate-100">
             State: {gestureState || 'none'}
