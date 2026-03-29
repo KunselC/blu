@@ -72,6 +72,20 @@ class GestureToggleBridge:
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
 
+    def _open_capture(self):
+        preferred = [self.camera_index]
+        fallback_indexes = [index for index in range(0, 6) if index != self.camera_index]
+        attempted_indexes = preferred + fallback_indexes
+
+        for index in attempted_indexes:
+            capture = cv2.VideoCapture(index)
+            if capture.isOpened():
+                self.camera_index = index
+                return capture, attempted_indexes
+            capture.release()
+
+        return None, attempted_indexes
+
     def request_stop(self) -> None:
         self._stop_event.set()
 
@@ -97,13 +111,17 @@ class GestureToggleBridge:
         drawing_utils = mp.solutions.drawing_utils
         hands_module = mp.solutions.hands
 
-        capture = cv2.VideoCapture(self.camera_index)
-        if not capture.isOpened():
+        capture, attempted_indexes = self._open_capture()
+        if capture is None:
             with self._lock:
-                self.message = f"Unable to open camera index {self.camera_index}."
+                attempted = ", ".join(str(index) for index in attempted_indexes)
+                self.message = (
+                    f"Unable to open camera. Tried indexes: {attempted}. "
+                    "Check macOS camera permission for your Python/Terminal app."
+                )
             return
 
-        self.message = "Camera connected"
+        self.message = f"Camera connected (index {self.camera_index})"
 
         with hands_module.Hands(
             static_image_mode=False,
@@ -246,24 +264,25 @@ class GestureRequestHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    bridge = GestureToggleBridge()
+    camera_index = int(os.getenv("GESTURE_CAMERA_INDEX", "0"))
+    bridge = GestureToggleBridge(camera_index=camera_index)
     GestureRequestHandler.bridge = bridge
     server = ThreadingHTTPServer(("127.0.0.1", 8765), GestureRequestHandler)
-    server_thread = threading.Thread(target=server.serve_forever, name="gesture-http-server", daemon=True)
+    camera_thread = threading.Thread(target=bridge.run_camera_loop, name="gesture-camera-loop", daemon=True)
 
     print("Gesture toggle bridge listening on http://127.0.0.1:8765")
     print("Endpoints: /status and /frame.jpg")
 
     try:
-        server_thread.start()
-        bridge.run_camera_loop()
+        camera_thread.start()
+        server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         bridge.request_stop()
         server.shutdown()
         server.server_close()
-        server_thread.join(timeout=2)
+        camera_thread.join(timeout=2)
 
 
 if __name__ == "__main__":
