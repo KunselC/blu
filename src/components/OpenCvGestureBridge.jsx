@@ -48,6 +48,18 @@ export function OpenCvGestureBridge({
   const [fingersHeldUp, setFingersHeldUp] = useState(0)
   const [frameToken, setFrameToken] = useState(Date.now())
   const [connectionMessage, setConnectionMessage] = useState('Waiting for Python/OpenCV gesture bridge...')
+  const [cameraPermissionMessage, setCameraPermissionMessage] = useState('')
+
+  const requestCameraPermission = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+      stream.getTracks().forEach((track) => track.stop())
+      setCameraPermissionMessage('Camera permission granted.')
+    } catch (cameraError) {
+      const message = cameraError instanceof Error ? cameraError.message : String(cameraError)
+      setCameraPermissionMessage(`Camera permission failed: ${message}`)
+    }
+  }
 
   useEffect(() => {
     let isMounted = true
@@ -96,11 +108,20 @@ export function OpenCvGestureBridge({
 
   return (
     <div className="flex h-full min-w-[220px] flex-1 flex-col rounded-2xl bg-slate-900/80 p-4 text-xs text-slate-200 shadow-lg ring-1 ring-slate-700/60">
-      <p className="mb-2 font-medium text-slate-100">Gesture Camera</p>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="font-medium text-slate-100">Gesture Camera</p>
+        <button
+          type="button"
+          onClick={requestCameraPermission}
+          className="rounded-md bg-slate-700 px-2 py-1 text-[11px] text-slate-100 ring-1 ring-slate-600 hover:bg-slate-600"
+        >
+          Enable Camera
+        </button>
+      </div>
       <div className="relative flex-1 overflow-hidden rounded-xl border border-dashed border-slate-600 bg-slate-800/60">
         <img
           src={frameSrc}
-          alt="Annotated hand tracking feed"
+          alt="Hand tracking feed"
           className="h-full w-full object-contain"
           onError={() => {
             setConnectionMessage('Waiting for Python/OpenCV gesture bridge...')
@@ -118,9 +139,7 @@ export function OpenCvGestureBridge({
           {connectionMessage}
         </div>
       </div>
-      <p className="mt-2 text-[11px] text-slate-400">
-        Expected Python endpoints: <code className="font-mono">{statusUrl}</code> and <code className="font-mono">{frameUrl}</code>
-      </p>
+      {cameraPermissionMessage ? <p className="mt-2 text-[11px] text-slate-400">{cameraPermissionMessage}</p> : null}
     </div>
   )
 }
