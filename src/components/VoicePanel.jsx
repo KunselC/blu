@@ -1,6 +1,23 @@
 import { Mic, MicOff } from 'lucide-react'
 
-export function VoicePanel({ transcript, setTranscript, isListening, error, onToggleListening }) {
+export function VoicePanel({
+  transcript,
+  setTranscript,
+  isListening,
+  error,
+  onToggleListening,
+  translateEnabled,
+  onToggleTranslate,
+  selectedLanguage,
+  onLanguageChange,
+}) {
+  const languageOptions = [
+    { value: 'es', label: 'Spanish' },
+    { value: 'fr', label: 'French' },
+    { value: 'de', label: 'German' },
+    { value: 'ja', label: 'Japanese' },
+  ]
+
   return (
     <div className="pointer-events-auto w-[min(90vw,540px)] rounded-2xl bg-white/80 p-4 shadow-lg backdrop-blur ring-1 ring-slate-200">
       <div className="mb-3 flex items-center justify-between">
@@ -13,6 +30,29 @@ export function VoicePanel({ transcript, setTranscript, isListening, error, onTo
           {isListening ? <MicOff size={16} /> : <Mic size={16} />}
           {isListening ? 'Stop' : 'Start'}
         </button>
+      </div>
+      <div className="mb-3 flex items-center gap-3">
+        <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700">
+          <input
+            type="checkbox"
+            checked={translateEnabled}
+            onChange={(event) => onToggleTranslate(event.target.checked)}
+            className="h-4 w-4 rounded border-slate-300 text-slate-700 focus:ring-slate-400"
+          />
+          Translate
+        </label>
+        <select
+          value={selectedLanguage}
+          onChange={(event) => onLanguageChange(event.target.value)}
+          disabled={!translateEnabled}
+          className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100"
+        >
+          {languageOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
       </div>
       <textarea
         value={transcript}

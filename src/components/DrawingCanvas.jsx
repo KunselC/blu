@@ -8,9 +8,14 @@ export function DrawingCanvas({ canDraw }) {
     const canvas = canvasRef.current
     if (!canvas) return
 
+    const parent = canvas.parentElement
+    if (!parent) return
+
+    const nextWidth = parent.clientWidth
+    const nextHeight = parent.clientHeight
     const imageData = canvas.getContext('2d')?.getImageData(0, 0, canvas.width, canvas.height)
-    canvas.width = window.innerWidth
-    canvas.height = window.innerHeight
+    canvas.width = nextWidth
+    canvas.height = nextHeight
 
     const ctx = canvas.getContext('2d')
     if (!ctx) return
@@ -27,8 +32,12 @@ export function DrawingCanvas({ canDraw }) {
 
   useEffect(() => {
     resizeCanvas()
-    window.addEventListener('resize', resizeCanvas)
-    return () => window.removeEventListener('resize', resizeCanvas)
+    const parent = canvasRef.current?.parentElement
+    if (!parent) return undefined
+
+    const observer = new ResizeObserver(() => resizeCanvas())
+    observer.observe(parent)
+    return () => observer.disconnect()
   }, [resizeCanvas])
 
   const drawFromEvent = (event) => {
