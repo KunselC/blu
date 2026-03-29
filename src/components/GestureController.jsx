@@ -7,8 +7,7 @@ export function GestureController({
   onHoldStateChange,
   onOneFingerHold,
   onTwoFingerHold,
-  onThreeFingerHold,
-  onEscapeHold,
+  onFiveFingerHold,
 }) {
   useEffect(() => {
     const timers = new Map()
@@ -60,26 +59,23 @@ export function GestureController({
 
     const onKeyDown = (event) => {
       if (event.repeat) return
-      switch (event.key) {
-        case '1':
-          beginHold(1, onOneFingerHold)
-          break
-        case '2':
-          beginHold(2, onTwoFingerHold)
-          break
-        case '3':
-          beginHold(3, onThreeFingerHold)
-          break
-        case 'Escape':
-          onEscapeHold()
-          break
-        default:
-          break
+        switch (event.key) {
+          case '1':
+            beginHold(1, onOneFingerHold)
+            break
+          case '2':
+            beginHold(2, onTwoFingerHold)
+            break
+          case '5':
+            beginHold(5, onFiveFingerHold)
+            break
+          default:
+            break
+        }
       }
-    }
 
     const onKeyUp = (event) => {
-      if (event.key === '1' || event.key === '2' || event.key === '3') {
+      if (event.key === '1' || event.key === '2' || event.key === '5') {
         clearHold(Number(event.key))
       }
     }
@@ -89,9 +85,9 @@ export function GestureController({
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
-      ;[1, 2, 3].forEach(clearHold)
+      ;[1, 2, 5].forEach(clearHold)
     }
-  }, [holdDuration, onEscapeHold, onHoldProgress, onHoldStateChange, onOneFingerHold, onThreeFingerHold, onTwoFingerHold])
+  }, [holdDuration, onFiveFingerHold, onHoldProgress, onHoldStateChange, onOneFingerHold, onTwoFingerHold])
 
   return null
 }
@@ -102,6 +98,5 @@ GestureController.propTypes = {
   onHoldStateChange: PropTypes.func.isRequired,
   onOneFingerHold: PropTypes.func.isRequired,
   onTwoFingerHold: PropTypes.func.isRequired,
-  onThreeFingerHold: PropTypes.func.isRequired,
-  onEscapeHold: PropTypes.func.isRequired,
+  onFiveFingerHold: PropTypes.func.isRequired,
 }

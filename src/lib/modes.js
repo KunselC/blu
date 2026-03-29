@@ -1,6 +1,8 @@
 export const MODES = {
   IDLE: 'IDLE',
   MENU: 'MENU',
+  CHAT: 'CHAT',
+  SCREEN_SHARE: 'SCREEN_SHARE',
   DRAWING: 'DRAWING',
   VOICE: 'VOICE',
 }

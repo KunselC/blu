@@ -1,4 +1,4 @@
-import { MessageSquareText, PencilLine } from 'lucide-react'
+import { MessageSquareText, Monitor } from 'lucide-react'
 import PropTypes from 'prop-types'
 
 function MenuButton({ icon: Icon, title, description, onClick, progress = 0, active = false }) {
@@ -25,26 +25,26 @@ function MenuButton({ icon: Icon, title, description, onClick, progress = 0, act
   )
 }
 
-export function PopupMenu({ visible, onSelectDraw, onSelectVoice, oneFingerProgress, twoFingerProgress, activeFingerCount }) {
+export function PopupMenu({ visible, onSelectChat, onSelectScreenShare, oneFingerProgress, twoFingerProgress, activeFingerCount }) {
   if (!visible) return null
 
   return (
-    <div className="pointer-events-auto rounded-3xl bg-white/70 p-5 shadow-xl shadow-slate-500/10 backdrop-blur-md ring-1 ring-slate-200">
+    <div className="pointer-events-auto rounded-3xl bg-white/35 p-5 shadow-xl shadow-slate-500/10 backdrop-blur-md ring-1 ring-white/50">
       <p className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-500">Gesture Menu</p>
       <div className="flex min-w-[300px] flex-col gap-3">
         <MenuButton
-          icon={PencilLine}
-          title="Draw"
-          description="Activate one-finger drawing mode"
-          onClick={onSelectDraw}
+          icon={MessageSquareText}
+          title="Chat"
+          description="1-finger hold in menu"
+          onClick={onSelectChat}
           progress={oneFingerProgress}
           active={activeFingerCount === 1}
         />
         <MenuButton
-          icon={MessageSquareText}
-          title="Voice Transcription"
-          description="Capture and display spoken text"
-          onClick={onSelectVoice}
+          icon={Monitor}
+          title="Screen Share"
+          description="2-finger hold in menu"
+          onClick={onSelectScreenShare}
           progress={twoFingerProgress}
           active={activeFingerCount === 2}
         />
@@ -64,8 +64,8 @@ MenuButton.propTypes = {
 
 PopupMenu.propTypes = {
   visible: PropTypes.bool.isRequired,
-  onSelectDraw: PropTypes.func.isRequired,
-  onSelectVoice: PropTypes.func.isRequired,
+  onSelectChat: PropTypes.func.isRequired,
+  onSelectScreenShare: PropTypes.func.isRequired,
   oneFingerProgress: PropTypes.number,
   twoFingerProgress: PropTypes.number,
   activeFingerCount: PropTypes.number,
