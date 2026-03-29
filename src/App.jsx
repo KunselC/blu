@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Hand, MessageSquareText, X } from 'lucide-react'
 import { DrawingCanvas } from './components/DrawingCanvas'
-import { GestureController } from './components/GestureController'
+import { GESTURE_STATES, OpenCvGestureBridge } from './components/OpenCvGestureBridge'
 import { PopupMenu } from './components/PopupMenu'
 import { VoicePanel } from './components/VoicePanel'
 import { useSpeechTranscription } from './hooks/useSpeechTranscription'
@@ -17,7 +17,12 @@ const insightTemplates = [
 ]
 
 function App() {
+  const menuHoldDuration = 1000
   const [mode, setMode] = useState(MODES.IDLE)
+  const [gestureState, setGestureState] = useState(GESTURE_STATES.EMPTY)
+  const [fingersHeldUp, setFingersHeldUp] = useState(0)
+  const [menuHoldProgress, setMenuHoldProgress] = useState({ 1: 0, 2: 0 })
+  const [activeMenuFingerCount, setActiveMenuFingerCount] = useState(0)
   const [translateEnabled, setTranslateEnabled] = useState(false)
   const [selectedLanguage, setSelectedLanguage] = useState('es')
   const [isScreenSharing, setIsScreenSharing] = useState(false)
@@ -31,11 +36,6 @@ function App() {
   const [chatMessages, setChatMessages] = useState([])
   const [, setTranscriptMoments] = useState([])
   const [liveInsight, setLiveInsight] = useState('Listening for context to generate live insights...')
-  const [gestureFeedback, setGestureFeedback] = useState({ label: 'Idle', active: false })
-  const [holdProgress, setHoldProgress] = useState({ 1: 0, 2: 0, 3: 0 })
-  const [activeHoldFingerCount, setActiveHoldFingerCount] = useState(0)
-  const [drawHoldActive, setDrawHoldActive] = useState(false)
-  const [showVoiceTranslateToggle, setShowVoiceTranslateToggle] = useState(false)
   const [transcriptionLog, setTranscriptionLog] = useState(() => {
     const raw = window.localStorage.getItem(TRANSCRIPT_LOG_KEY)
     if (!raw) return []
@@ -50,7 +50,10 @@ function App() {
   const splitContainerRef = useRef(null)
   const transcriptionLogRef = useRef(null)
   const screenStreamRef = useRef(null)
-  const gestureTimeoutRef = useRef(null)
+  const menuHoldTimeoutRef = useRef(null)
+  const menuHoldRafRef = useRef(null)
+  const menuHoldStartRef = useRef(0)
+  const menuHoldFingerRef = useRef(0)
 
   const {
     transcript,
@@ -69,6 +72,7 @@ function App() {
   const isMenuOpen = mode === MODES.MENU
   const isDrawing = mode === MODES.DRAWING
   const isVoiceMode = mode === MODES.VOICE
+  const isChatMode = mode === MODES.CHAT
 
   useEffect(() => {
     window.localStorage.setItem(TRANSCRIPT_LOG_KEY, JSON.stringify(transcriptionLog))
@@ -82,15 +86,6 @@ function App() {
       currentLog[currentLog.length - 1] === latestText ? currentLog : [...currentLog, latestText],
     )
   }, [displayTranscript])
-
-  useEffect(
-    () => () => {
-      if (gestureTimeoutRef.current) {
-        window.clearTimeout(gestureTimeoutRef.current)
-      }
-    },
-    [],
-  )
 
   useEffect(() => {
     const latestText = displayTranscript.trim()
@@ -138,6 +133,18 @@ function App() {
     }
   }, [isScreenSharing])
 
+  useEffect(
+    () => () => {
+      if (menuHoldTimeoutRef.current) {
+        window.clearTimeout(menuHoldTimeoutRef.current)
+      }
+      if (menuHoldRafRef.current) {
+        window.cancelAnimationFrame(menuHoldRafRef.current)
+      }
+    },
+    [],
+  )
+
   useEffect(() => {
     if (!isDraggingDivider) return undefined
 
@@ -164,6 +171,8 @@ function App() {
     screenStreamRef.current?.getTracks().forEach((track) => track.stop())
     screenStreamRef.current = null
     setIsScreenSharing(false)
+    setGestureState(GESTURE_STATES.EMPTY)
+    setFingersHeldUp(0)
   }, [])
 
   useEffect(() => () => stopScreenShare(), [stopScreenShare])
@@ -171,6 +180,8 @@ function App() {
   const startScreenShare = useCallback(async () => {
     try {
       setScreenShareError('')
+      setGestureState(GESTURE_STATES.EMPTY)
+      setFingersHeldUp(0)
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
       screenStreamRef.current = stream
       setIsScreenSharing(true)
@@ -193,51 +204,37 @@ function App() {
     startScreenShare()
   }, [isScreenSharing, startScreenShare, stopScreenShare])
 
-  const activateDraw = useCallback(() => {
-    setMode(MODES.DRAWING)
+  const openChatMode = useCallback(() => {
+    setGestureState(GESTURE_STATES.EMPTY)
+    setFingersHeldUp(0)
+    setIsChatOpen(true)
   }, [])
 
-  const activateVoice = useCallback(() => {
-    setMode(MODES.VOICE)
-  }, [])
-
-  const setGestureFlash = useCallback((label) => {
-    setGestureFeedback({ label, active: true })
-    if (gestureTimeoutRef.current) {
-      window.clearTimeout(gestureTimeoutRef.current)
+  const clearMenuHold = useCallback(() => {
+    if (menuHoldTimeoutRef.current) {
+      window.clearTimeout(menuHoldTimeoutRef.current)
+      menuHoldTimeoutRef.current = null
     }
-    gestureTimeoutRef.current = window.setTimeout(
-      () => setGestureFeedback((current) => ({ ...current, active: false })),
-      1200,
-    )
+    if (menuHoldRafRef.current) {
+      window.cancelAnimationFrame(menuHoldRafRef.current)
+      menuHoldRafRef.current = null
+    }
+    menuHoldStartRef.current = 0
+    menuHoldFingerRef.current = 0
+    setActiveMenuFingerCount(0)
+    setMenuHoldProgress({ 1: 0, 2: 0 })
   }, [])
 
-  const handleThreeFingerHold = useCallback(() => {
-    setMode((current) => (current === MODES.IDLE ? MODES.MENU : MODES.IDLE))
-    setDrawHoldActive(false)
-    setGestureFlash('3-finger hold')
-  }, [setGestureFlash])
-
-  const handleOneFingerHold = useCallback(() => {
-    setMode((current) => {
-      if (current === MODES.MENU) {
-        setGestureFlash('Draw selected')
-        return MODES.DRAWING
-      }
-      return current
-    })
-  }, [setGestureFlash])
-
-  const handleTwoFingerHold = useCallback(() => {
-    setMode((current) => {
-      if (current === MODES.MENU) {
-        setShowVoiceTranslateToggle(true)
-        setGestureFlash('Voice selected')
-        return MODES.VOICE
-      }
-      return current
-    })
-  }, [setGestureFlash])
+  const completeMenuSelection = useCallback((fingerCount) => {
+    clearMenuHold()
+    if (fingerCount === 1) {
+      openChatMode()
+      return
+    }
+    if (fingerCount === 2) {
+      toggleScreenShare()
+    }
+  }, [clearMenuHold, openChatMode, toggleScreenShare])
 
   const sendChatMessage = useCallback(() => {
     const nextMessage = chatInput.trim()
@@ -246,15 +243,14 @@ function App() {
     setChatInput('')
   }, [chatInput])
 
-  const handleEscape = useCallback(() => {
-    handleThreeFingerHold()
-    setGestureFlash('3-finger hold (Esc)')
-  }, [handleThreeFingerHold, setGestureFlash])
-
   const modeLabel = useMemo(() => {
     switch (mode) {
+      case MODES.CHAT:
+        return 'CHAT'
       case MODES.DRAWING:
         return 'DRAWING'
+      case MODES.SCREEN_SHARE:
+        return 'SCREEN SHARE'
       case MODES.VOICE:
         return 'VOICE'
       case MODES.MENU:
@@ -265,13 +261,65 @@ function App() {
   }, [mode])
 
   useEffect(() => {
-    if (mode !== MODES.DRAWING) {
-      setDrawHoldActive(false)
+    if (isChatOpen) {
+      setMode(MODES.CHAT)
+      return
     }
-    if (mode !== MODES.VOICE) {
-      setShowVoiceTranslateToggle(false)
+    if (isScreenSharing) {
+      setMode(MODES.SCREEN_SHARE)
+      return
     }
-  }, [mode])
+
+    switch (gestureState) {
+      case GESTURE_STATES.DRAWING:
+        setMode(MODES.DRAWING)
+        return
+      case GESTURE_STATES.VOICE:
+        setMode(MODES.VOICE)
+        return
+      case GESTURE_STATES.MENU:
+        setMode(MODES.MENU)
+        return
+      default:
+        setMode(MODES.IDLE)
+    }
+  }, [gestureState, isChatOpen, isScreenSharing])
+
+  useEffect(() => {
+    if (!isMenuOpen || isChatOpen || isScreenSharing || (fingersHeldUp !== 1 && fingersHeldUp !== 2)) {
+      clearMenuHold()
+      return
+    }
+
+    if (menuHoldFingerRef.current === fingersHeldUp && menuHoldTimeoutRef.current) {
+      return
+    }
+
+    clearMenuHold()
+    menuHoldFingerRef.current = fingersHeldUp
+    menuHoldStartRef.current = Date.now()
+    setActiveMenuFingerCount(fingersHeldUp)
+
+    const updateProgress = () => {
+      const elapsed = Date.now() - menuHoldStartRef.current
+      const progress = Math.min(1, elapsed / menuHoldDuration)
+      setMenuHoldProgress({
+        1: fingersHeldUp === 1 ? progress : 0,
+        2: fingersHeldUp === 2 ? progress : 0,
+      })
+
+      if (progress < 1) {
+        menuHoldRafRef.current = window.requestAnimationFrame(updateProgress)
+      }
+    }
+
+    updateProgress()
+    menuHoldTimeoutRef.current = window.setTimeout(() => {
+      completeMenuSelection(fingersHeldUp)
+    }, menuHoldDuration)
+
+    return clearMenuHold
+  }, [clearMenuHold, completeMenuSelection, fingersHeldUp, isChatOpen, isMenuOpen, isScreenSharing, menuHoldDuration])
 
   const summaryText = useMemo(() => {
     const recentItems = transcriptionLog.slice(-5)
@@ -284,61 +332,24 @@ function App() {
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-gradient-to-br from-slate-50 to-slate-100 text-slate-700">
-      <GestureController
-        holdDuration={900}
-        onOneFingerHold={handleOneFingerHold}
-        onTwoFingerHold={handleTwoFingerHold}
-        onThreeFingerHold={handleThreeFingerHold}
-        onEscapeHold={handleEscape}
-        onHoldStateChange={(fingerCount, isActive) => {
-          setActiveHoldFingerCount((current) => (isActive ? fingerCount : current === fingerCount ? 0 : current))
-          if (fingerCount === 1 && mode === MODES.DRAWING) {
-            setDrawHoldActive(isActive)
-          }
-        }}
-        onHoldProgress={(fingerCount, progress) => {
-          setHoldProgress((current) => ({ ...current, [fingerCount]: progress }))
-        }}
-      />
-
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(255,255,255,0.75),_rgba(241,245,249,0.65)_40%,_rgba(226,232,240,0.45))]" />
 
       <div className="absolute inset-x-0 top-0 z-30 border-b border-slate-200/70 bg-white/85 px-4 py-2 backdrop-blur">
         <div className="flex items-center justify-between gap-3 text-xs">
           <div className="flex items-center gap-2">
             <span className="rounded-lg bg-slate-100 px-2 py-1 font-semibold text-slate-700">Global Mode: {modeLabel}</span>
-            <span
-              className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 ring-1 transition ${
-                gestureFeedback.active ? 'bg-emerald-100 text-emerald-700 ring-emerald-300' : 'bg-white text-slate-500 ring-slate-200'
-              }`}
-            >
+            <span className="inline-flex items-center gap-1 rounded-lg bg-white px-2 py-1 text-slate-500 ring-1 ring-slate-200 transition">
               <Hand size={12} />
-              {gestureFeedback.label}
+              State: {gestureState || 'none'}
             </span>
           </div>
-          <p className="text-slate-500">Hold: [3] toggle/exit, [1] draw, [2] voice, [Esc] = 3-finger fallback</p>
-        </div>
-        <div className="mt-2 flex items-center gap-2">
-          {[1, 2, 3].map((count) => (
-            <div
-              key={count}
-              className={`relative overflow-hidden rounded-md border px-2 py-1 text-[11px] ${
-                activeHoldFingerCount === count ? 'border-emerald-300 text-emerald-700' : 'border-slate-200 text-slate-500'
-              }`}
-            >
-              <span
-                className="pointer-events-none absolute inset-y-0 left-0 bg-emerald-200/40 transition-all duration-100"
-                style={{ width: `${Math.max(0, Math.min(100, holdProgress[count] * 100))}%` }}
-              />
-              <span className="relative z-10">{count}-finger hold</span>
-            </div>
-          ))}
+          <p className="text-slate-500">Fingers held up: {fingersHeldUp}</p>
         </div>
       </div>
 
       <div className="absolute inset-x-0 bottom-16 top-14 z-10 flex gap-3 p-4">
         <aside className="flex w-72 min-h-0 flex-col rounded-2xl bg-white/80 p-4 shadow ring-1 ring-slate-200 backdrop-blur">
-          <h2 className="mb-3 text-sm font-semibold text-slate-700">Caption Log</h2>
+          <h2 className="mb-3 text-sm font-semibold text-slate-700">Voice Transcript Log</h2>
           <div
             ref={transcriptionLogRef}
             className="max-h-[44vh] min-h-[170px] space-y-2 overflow-y-auto rounded-xl bg-white p-3 ring-1 ring-slate-200"
@@ -361,16 +372,16 @@ function App() {
 
         <div ref={splitContainerRef} className="relative flex flex-1">
           <section className="relative rounded-2xl bg-white/40 shadow ring-1 ring-slate-200" style={{ width: `${splitRatio * 100}%` }}>
-            <DrawingCanvas canDraw={isDrawing && drawHoldActive} />
+            <DrawingCanvas canDraw={isDrawing} />
 
             <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center">
               <PopupMenu
                 visible={isMenuOpen}
-                onSelectDraw={activateDraw}
-                onSelectVoice={activateVoice}
-                oneFingerProgress={holdProgress[1]}
-                twoFingerProgress={holdProgress[2]}
-                activeFingerCount={activeHoldFingerCount}
+                onSelectChat={openChatMode}
+                onSelectShareScreen={toggleScreenShare}
+                oneFingerProgress={menuHoldProgress[1]}
+                twoFingerProgress={menuHoldProgress[2]}
+                activeFingerCount={activeMenuFingerCount}
               />
             </div>
 
@@ -385,7 +396,7 @@ function App() {
                   onToggleTranslate={setTranslateEnabled}
                   selectedLanguage={selectedLanguage}
                   onLanguageChange={setSelectedLanguage}
-                  showTranslateToggle={showVoiceTranslateToggle || activeHoldFingerCount === 2}
+                  showTranslateToggle
                   onToggleListening={() => {
                     if (isListening) {
                       stopListening()
@@ -407,19 +418,27 @@ function App() {
                 aria-label="Resize split screen"
               />
 
-              <section className="flex min-w-[220px] flex-1 flex-col rounded-2xl bg-slate-900/80 p-4 text-xs text-slate-200 shadow-lg ring-1 ring-slate-700/60">
-                <p className="mb-2 font-medium text-slate-100">{isScreenSharing ? 'Screen Share' : 'Camera Feed (Placeholder)'}</p>
-                <div className="relative flex-1 overflow-hidden rounded-xl border border-dashed border-slate-600 bg-slate-800/60">
-                  {isScreenSharing ? (
+              {isScreenSharing ? (
+                <section className="flex min-w-[220px] flex-1 flex-col rounded-2xl bg-slate-900/80 p-4 text-xs text-slate-200 shadow-lg ring-1 ring-slate-700/60">
+                  <p className="mb-2 font-medium text-slate-100">Screen Share</p>
+                  <div className="relative flex-1 overflow-hidden rounded-xl border border-dashed border-slate-600 bg-slate-800/60">
                     <video ref={screenVideoRef} autoPlay playsInline muted className="h-full w-full object-contain" />
-                  ) : (
-                    <div className="flex h-full items-center justify-center text-center text-[11px] text-slate-400">
-                      Live gesture camera stream
-                    </div>
-                  )}
-                </div>
-                {screenShareError ? <p className="mt-2 text-[11px] text-rose-300">{screenShareError}</p> : null}
-              </section>
+                  </div>
+                  {screenShareError ? <p className="mt-2 text-[11px] text-rose-300">{screenShareError}</p> : null}
+                </section>
+              ) : isChatMode ? (
+                <section className="flex min-w-[220px] flex-1 flex-col rounded-2xl bg-slate-900/80 p-4 text-xs text-slate-200 shadow-lg ring-1 ring-slate-700/60">
+                  <p className="mb-2 font-medium text-slate-100">Gesture Camera Paused</p>
+                  <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-slate-600 bg-slate-800/60 px-6 text-center text-[11px] text-slate-400">
+                    Chat is open, so camera polling and finger-state updates are temporarily paused until you close the chat panel.
+                  </div>
+                </section>
+              ) : (
+                <OpenCvGestureBridge
+                  onStateChange={setGestureState}
+                  onFingerCountChange={setFingersHeldUp}
+                />
+              )}
             </>
           ) : null}
         </div>
@@ -427,7 +446,16 @@ function App() {
 
       <button
         type="button"
-        onClick={() => setIsChatOpen((current) => !current)}
+        onClick={() => {
+          setIsChatOpen((current) => {
+            const nextValue = !current
+            if (nextValue) {
+              setGestureState(GESTURE_STATES.EMPTY)
+              setFingersHeldUp(0)
+            }
+            return nextValue
+          })
+        }}
         className="absolute right-4 top-1/2 z-40 -translate-y-1/2 rounded-xl bg-white/90 p-3 text-slate-700 shadow ring-1 ring-slate-200"
       >
         <MessageSquareText size={16} />

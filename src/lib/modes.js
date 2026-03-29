@@ -3,4 +3,6 @@ export const MODES = {
   MENU: 'MENU',
   DRAWING: 'DRAWING',
   VOICE: 'VOICE',
+  CHAT: 'CHAT',
+  SCREEN_SHARE: 'SCREEN_SHARE',
 }

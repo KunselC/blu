@@ -2,6 +2,10 @@ import { MessageSquareText, PencilLine } from 'lucide-react'
 import PropTypes from 'prop-types'
 
 function MenuButton({ icon: Icon, title, description, onClick, progress = 0, active = false }) {
+  const normalizedProgress = Math.max(0, Math.min(1, progress))
+  const circumference = 2 * Math.PI * 16
+  const dashOffset = circumference * (1 - normalizedProgress)
+
   return (
     <button
       type="button"
@@ -10,11 +14,21 @@ function MenuButton({ icon: Icon, title, description, onClick, progress = 0, act
         active ? 'ring-emerald-300 shadow-emerald-200/40' : 'ring-slate-200'
       }`}
     >
-      <span
-        className="pointer-events-none absolute inset-y-0 left-0 bg-emerald-200/40 transition-all duration-100"
-        style={{ width: `${Math.max(0, Math.min(100, progress * 100))}%` }}
-      />
-      <span className="rounded-xl bg-slate-100 p-2 text-slate-600">
+      <span className="relative flex h-12 w-12 items-center justify-center rounded-xl bg-slate-100 text-slate-600">
+        <svg className="pointer-events-none absolute inset-0 -rotate-90" viewBox="0 0 40 40" aria-hidden="true">
+          <circle cx="20" cy="20" r="16" fill="none" stroke="rgba(148,163,184,0.25)" strokeWidth="3" />
+          <circle
+            cx="20"
+            cy="20"
+            r="16"
+            fill="none"
+            stroke="rgb(16, 185, 129)"
+            strokeWidth="3"
+            strokeDasharray={circumference}
+            strokeDashoffset={dashOffset}
+            strokeLinecap="round"
+          />
+        </svg>
         <Icon size={20} />
       </span>
       <span>
@@ -25,7 +39,14 @@ function MenuButton({ icon: Icon, title, description, onClick, progress = 0, act
   )
 }
 
-export function PopupMenu({ visible, onSelectDraw, onSelectVoice, oneFingerProgress, twoFingerProgress, activeFingerCount }) {
+export function PopupMenu({
+  visible,
+  onSelectChat,
+  onSelectShareScreen,
+  oneFingerProgress,
+  twoFingerProgress,
+  activeFingerCount,
+}) {
   if (!visible) return null
 
   return (
@@ -33,18 +54,18 @@ export function PopupMenu({ visible, onSelectDraw, onSelectVoice, oneFingerProgr
       <p className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-500">Gesture Menu</p>
       <div className="flex min-w-[300px] flex-col gap-3">
         <MenuButton
-          icon={PencilLine}
-          title="Draw"
-          description="Activate one-finger drawing mode"
-          onClick={onSelectDraw}
+          icon={MessageSquareText}
+          title="Chat"
+          description="Hold one finger for one second to open chat"
+          onClick={onSelectChat}
           progress={oneFingerProgress}
           active={activeFingerCount === 1}
         />
         <MenuButton
-          icon={MessageSquareText}
-          title="Voice Transcription"
-          description="Capture and display spoken text"
-          onClick={onSelectVoice}
+          icon={PencilLine}
+          title="Share Screen"
+          description="Hold two fingers for one second to start screen share"
+          onClick={onSelectShareScreen}
           progress={twoFingerProgress}
           active={activeFingerCount === 2}
         />
@@ -64,8 +85,8 @@ MenuButton.propTypes = {
 
 PopupMenu.propTypes = {
   visible: PropTypes.bool.isRequired,
-  onSelectDraw: PropTypes.func.isRequired,
-  onSelectVoice: PropTypes.func.isRequired,
+  onSelectChat: PropTypes.func.isRequired,
+  onSelectShareScreen: PropTypes.func.isRequired,
   oneFingerProgress: PropTypes.number,
   twoFingerProgress: PropTypes.number,
   activeFingerCount: PropTypes.number,
