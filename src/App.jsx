@@ -10,6 +10,9 @@ import { useSpeechTranscription } from './hooks/useSpeechTranscription'
 import { MODES } from './lib/modes'
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? 'http://localhost:3001'
+const GESTURE_EXIT_PULSE_URL = import.meta.env.VITE_GESTURE_EXIT_PULSE_URL ?? 'http://127.0.0.1:8765/pulse-exit'
+const DEFAULT_HOLD_DURATION = 900
+const CHAT_SELECTION_HOLD_DURATION = 3000
 const MAX_DRAW_SEGMENTS = 6000
 const MAX_CHAT_MESSAGES = 200
 const MAX_TRANSCRIPT_LOG = 500
@@ -32,6 +35,7 @@ function App() {
   const [showVoiceTranslateToggle, setShowVoiceTranslateToggle] = useState(false)
   const [gestureState, setGestureState] = useState(GESTURE_STATES.EMPTY)
   const [fingersHeldUp, setFingersHeldUp] = useState(0)
+  const [pointerTip, setPointerTip] = useState(null)
   const [clientId] = useState(() => `client-${Math.random().toString(36).slice(2, 10)}`)
   const screenVideoRef = useRef(null)
   const transcriptionLogRef = useRef(null)
@@ -39,9 +43,14 @@ function App() {
   const gestureTimeoutRef = useRef(null)
   const bridgeHoldRef = useRef({ fingerCount: 0, startAt: 0, timerId: null, rafId: null })
   const lastBridgeGestureRef = useRef(GESTURE_STATES.EMPTY)
+  const lastFingerDrawPointRef = useRef(null)
   const socketRef = useRef(null)
   const lastTranscriptRef = useRef('')
   const applyingRemoteTranscriptRef = useRef(false)
+  const getHoldDurationForFinger = useCallback(
+    (fingerCount) => (fingerCount === 1 ? CHAT_SELECTION_HOLD_DURATION : DEFAULT_HOLD_DURATION),
+    [],
+  )
 
   const {
     transcript,
@@ -198,12 +207,39 @@ function App() {
     )
   }, [])
 
+  const clearBridgeHold = useCallback(() => {
+    if (bridgeHoldRef.current.timerId) {
+      window.clearTimeout(bridgeHoldRef.current.timerId)
+    }
+    if (bridgeHoldRef.current.rafId) {
+      window.cancelAnimationFrame(bridgeHoldRef.current.rafId)
+    }
+    const fingerCount = bridgeHoldRef.current.fingerCount
+    bridgeHoldRef.current = { fingerCount: 0, startAt: 0, timerId: null, rafId: null }
+    if (fingerCount) {
+      setHoldProgress((current) => ({ ...current, [fingerCount]: 0 }))
+      setActiveHoldFingerCount((current) => (current === fingerCount ? 0 : current))
+    }
+  }, [])
+
+  const pulseExitGesture = useCallback(async () => {
+    try {
+      await fetch(GESTURE_EXIT_PULSE_URL, { method: 'POST' })
+    } catch {
+      // Keep exit behavior working even if the local bridge is unavailable.
+    }
+  }, [])
+
   const exitToBaseState = useCallback(() => {
+    clearBridgeHold()
+    pulseExitGesture()
+    setActiveHoldFingerCount(0)
+    setHoldProgress({ 1: 0, 2: 0, 5: 0 })
     stopScreenShare()
     setMode(MODES.IDLE)
     setShowVoiceTranslateToggle(false)
     setShowSummaryModal(false)
-  }, [stopScreenShare])
+  }, [clearBridgeHold, pulseExitGesture, stopScreenShare])
 
   const handleFiveFingerHold = useCallback(() => {
     exitToBaseState()
@@ -233,21 +269,6 @@ function App() {
     handleScreenShareSelection()
   }, [handleScreenShareSelection])
 
-  const clearBridgeHold = useCallback(() => {
-    if (bridgeHoldRef.current.timerId) {
-      window.clearTimeout(bridgeHoldRef.current.timerId)
-    }
-    if (bridgeHoldRef.current.rafId) {
-      window.cancelAnimationFrame(bridgeHoldRef.current.rafId)
-    }
-    const fingerCount = bridgeHoldRef.current.fingerCount
-    bridgeHoldRef.current = { fingerCount: 0, startAt: 0, timerId: null, rafId: null }
-    if (fingerCount) {
-      setHoldProgress((current) => ({ ...current, [fingerCount]: 0 }))
-      setActiveHoldFingerCount((current) => (current === fingerCount ? 0 : current))
-    }
-  }, [])
-
   const startBridgeHold = useCallback((fingerCount) => {
     if (![1, 2, 5].includes(fingerCount)) {
       clearBridgeHold()
@@ -259,11 +280,12 @@ function App() {
     }
 
     clearBridgeHold()
+    const holdDuration = getHoldDurationForFinger(fingerCount)
     const startedAt = Date.now()
 
     const updateProgress = () => {
       const elapsed = Date.now() - startedAt
-      const progress = Math.min(1, elapsed / 900)
+      const progress = Math.min(1, elapsed / holdDuration)
       setHoldProgress((current) => ({ ...current, [fingerCount]: progress }))
       if (progress < 1) {
         bridgeHoldRef.current.rafId = window.requestAnimationFrame(updateProgress)
@@ -279,12 +301,12 @@ function App() {
         if (fingerCount === 2) handleTwoFingerHold()
         if (fingerCount === 5) handleFiveFingerHold()
         clearBridgeHold()
-      }, 900),
+      }, holdDuration),
     }
 
     setActiveHoldFingerCount(fingerCount)
     setHoldProgress((current) => ({ ...current, [fingerCount]: 0 }))
-  }, [clearBridgeHold, handleFiveFingerHold, handleOneFingerHold, handleTwoFingerHold])
+  }, [clearBridgeHold, getHoldDurationForFinger, handleFiveFingerHold, handleOneFingerHold, handleTwoFingerHold])
 
   const sendChatMessage = useCallback(() => {
     const nextMessage = chatInput.trim()
@@ -299,6 +321,30 @@ function App() {
     setDrawingSegments((current) => [...current.slice(-(MAX_DRAW_SEGMENTS - 1)), segment])
     socketRef.current?.emit('drawing:segment', { segment, senderId: clientId })
   }, [clientId])
+
+  useEffect(() => {
+    if (!isDrawing || fingersHeldUp !== 1 || !pointerTip) {
+      lastFingerDrawPointRef.current = null
+      return
+    }
+
+    if (!lastFingerDrawPointRef.current) {
+      lastFingerDrawPointRef.current = pointerTip
+      return
+    }
+
+    const deltaX = pointerTip.x - lastFingerDrawPointRef.current.x
+    const deltaY = pointerTip.y - lastFingerDrawPointRef.current.y
+    if (Math.hypot(deltaX, deltaY) < 0.003) {
+      return
+    }
+
+    handleSegmentDraw({
+      from: lastFingerDrawPointRef.current,
+      to: pointerTip,
+    })
+    lastFingerDrawPointRef.current = pointerTip
+  }, [fingersHeldUp, handleSegmentDraw, isDrawing, pointerTip])
 
   const modeLabel = useMemo(() => {
     switch (mode) {
@@ -368,7 +414,8 @@ function App() {
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-gradient-to-br from-slate-50 to-slate-100 text-slate-700">
       <GestureController
-        holdDuration={900}
+        holdDuration={DEFAULT_HOLD_DURATION}
+        holdDurations={{ 1: CHAT_SELECTION_HOLD_DURATION }}
         onOneFingerHold={handleOneFingerHold}
         onTwoFingerHold={handleTwoFingerHold}
         onFiveFingerHold={handleFiveFingerHold}
@@ -441,6 +488,33 @@ function App() {
           <section className="relative min-h-0 rounded-2xl bg-white/40 shadow ring-1 ring-white/50 backdrop-blur-md">
             <h2 className="absolute left-4 top-3 z-20 text-xs font-semibold uppercase tracking-wide text-slate-600">Whiteboard</h2>
             <DrawingCanvas canDraw={isDrawing} segments={drawingSegments} onSegmentDraw={handleSegmentDraw} />
+            {pointerTip ? (
+              <div className="pointer-events-none absolute inset-0 z-20">
+                <div
+                  className="absolute"
+                  style={{
+                    left: `${pointerTip.x * 100}%`,
+                    top: `${pointerTip.y * 100}%`,
+                    transform: 'translate(-50%, -90%)',
+                  }}
+                >
+                  <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+                    <path
+                      d="M14 3.5c1.2 0 2.3.7 2.9 1.8l7.1 13c1 1.8-.3 4.1-2.4 4.1H6.4c-2.1 0-3.4-2.3-2.4-4.1l7.1-13A3.3 3.3 0 0 1 14 3.5Z"
+                      fill="rgba(16, 185, 129, 0.88)"
+                      stroke="rgba(5, 150, 105, 0.95)"
+                      strokeWidth="1.5"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="M14 7.5 19 17H9l5-9.5Z"
+                      fill="rgba(236, 253, 245, 0.9)"
+                      stroke="none"
+                    />
+                  </svg>
+                </div>
+              </div>
+            ) : null}
             <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center">
               <PopupMenu
                 visible={isMenuOpen}
@@ -497,6 +571,7 @@ function App() {
                 <OpenCvGestureBridge
                   onStateChange={setGestureState}
                   onFingerCountChange={setFingersHeldUp}
+                  onPointerTipChange={setPointerTip}
                 />
               )}
             </div>

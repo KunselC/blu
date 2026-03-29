@@ -67,9 +67,13 @@ class GestureToggleBridge:
         self.camera_index = camera_index
         self.state = GESTURE_EMPTY
         self.fingers_held_up = 0
+        self.pointer_tip = None
         self.frame_token = int(time.time() * 1000)
         self.latest_frame_jpeg = b""
         self.message = "Starting gesture bridge..."
+        self._forced_state = None
+        self._forced_fingers = None
+        self._forced_until = 0.0
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
 
@@ -90,11 +94,23 @@ class GestureToggleBridge:
     def request_stop(self) -> None:
         self._stop_event.set()
 
+    def pulse_exit(self, duration: float = 0.2) -> None:
+        with self._lock:
+            self.state = GESTURE_EMPTY
+            self.fingers_held_up = 5
+            self.frame_token = int(time.time() * 1000)
+            self._forced_state = GESTURE_EMPTY
+            self._forced_fingers = 5
+            self._forced_until = time.time() + duration
+            self.message = f"Forced 5-finger exit pulse on camera {self.camera_index}"
+
     def get_status_payload(self) -> dict:
         with self._lock:
+            forced_active = self._forced_until > time.time()
             return {
-                "state": self.state,
-                "fingersHeldUp": self.fingers_held_up,
+                "state": self._forced_state if forced_active else self.state,
+                "fingersHeldUp": self._forced_fingers if forced_active else self.fingers_held_up,
+                "pointerTip": self.pointer_tip,
                 "frameToken": self.frame_token,
                 "message": self.message,
             }
@@ -143,6 +159,7 @@ class GestureToggleBridge:
                 results = hands.process(rgb_frame)
 
                 finger_count = 0
+                pointer_tip = None
                 handedness_label = "Right"
 
                 if results.multi_hand_landmarks:
@@ -157,6 +174,10 @@ class GestureToggleBridge:
                         handedness_label = results.multi_handedness[0].classification[0].label
 
                     finger_count = count_extended_fingers(landmarks, handedness_label)
+                    pointer_tip = {
+                        "x": max(0.0, min(1.0, landmarks.landmark[8].x)),
+                        "y": max(0.0, min(1.0, landmarks.landmark[8].y)),
+                    }
 
                 next_state = resolve_gesture_state(self.state, finger_count)
                 overlay_status(frame, next_state, finger_count)
@@ -165,6 +186,7 @@ class GestureToggleBridge:
                 if ok:
                     with self._lock:
                         self.fingers_held_up = finger_count
+                        self.pointer_tip = pointer_tip
                         self.state = next_state
                         self.frame_token = int(time.time() * 1000)
                         self.latest_frame_jpeg = encoded.tobytes()
@@ -271,6 +293,14 @@ class GestureRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(frame)))
             self.end_headers()
             self.wfile.write(frame)
+            return
+
+        self.send_error(HTTPStatus.NOT_FOUND, "Unknown endpoint")
+
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path.startswith("/pulse-exit"):
+            self.bridge.pulse_exit()
+            self._send_json(self.bridge.get_status_payload())
             return
 
         self.send_error(HTTPStatus.NOT_FOUND, "Unknown endpoint")

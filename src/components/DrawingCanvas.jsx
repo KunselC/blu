@@ -12,7 +12,7 @@ const drawSegment = (ctx, segment, width, height) => {
   ctx.stroke()
 }
 
-export function DrawingCanvas({ canDraw, segments, onSegmentDraw }) {
+export function DrawingCanvas({ canDraw, segments, onSegmentDraw, enablePointerInput = false }) {
   const canvasRef = useRef(null)
   const drawingRef = useRef(false)
   const lastPointRef = useRef(null)
@@ -67,7 +67,7 @@ export function DrawingCanvas({ canDraw, segments, onSegmentDraw }) {
   }, [segments])
 
   const drawFromEvent = (event) => {
-    if (!canDraw || !drawingRef.current) return
+    if (!enablePointerInput || !canDraw || !drawingRef.current) return
 
     const canvas = canvasRef.current
     if (!canvas || !lastPointRef.current) return
@@ -85,7 +85,7 @@ export function DrawingCanvas({ canDraw, segments, onSegmentDraw }) {
   }
 
   const handlePointerDown = (event) => {
-    if (!canDraw) return
+    if (!enablePointerInput || !canDraw) return
 
     const canvas = canvasRef.current
     if (!canvas) return
@@ -106,7 +106,7 @@ export function DrawingCanvas({ canDraw, segments, onSegmentDraw }) {
   return (
     <canvas
       ref={canvasRef}
-      className={`absolute inset-0 h-full w-full ${canDraw ? 'cursor-crosshair' : 'cursor-default'}`}
+      className={`absolute inset-0 h-full w-full ${canDraw && enablePointerInput ? 'cursor-crosshair' : 'cursor-default'}`}
       onPointerDown={handlePointerDown}
       onPointerMove={drawFromEvent}
       onPointerUp={handlePointerUp}
@@ -130,4 +130,5 @@ DrawingCanvas.propTypes = {
     }),
   ).isRequired,
   onSegmentDraw: PropTypes.func.isRequired,
+  enablePointerInput: PropTypes.bool,
 }

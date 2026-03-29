@@ -46,12 +46,27 @@ function readGestureState(payload, fingerCount, previousState) {
   return candidate ?? resolveGestureState(previousState, fingerCount)
 }
 
+function readPointerTip(payload) {
+  const tip = payload?.pointerTip
+  if (!tip || typeof tip !== 'object') return null
+
+  const x = Number(tip.x)
+  const y = Number(tip.y)
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+
+  return {
+    x: Math.max(0, Math.min(1, x)),
+    y: Math.max(0, Math.min(1, y)),
+  }
+}
+
 export function OpenCvGestureBridge({
   statusUrl = 'http://127.0.0.1:8765/status',
   frameUrl = 'http://127.0.0.1:8765/frame.jpg',
   pollInterval = 250,
   onStateChange,
   onFingerCountChange,
+  onPointerTipChange,
 }) {
   const [gestureState, setGestureState] = useState(GESTURE_STATES.EMPTY)
   const [fingersHeldUp, setFingersHeldUp] = useState(0)
@@ -72,15 +87,18 @@ export function OpenCvGestureBridge({
         if (!isMounted) return
 
         const nextFingerCount = readFingerCount(payload)
+        const nextPointerTip = readPointerTip(payload)
         setConnectionMessage(payload?.message || 'Connected to Python/OpenCV gesture bridge')
         setFingersHeldUp(nextFingerCount)
         setGestureState((currentState) => readGestureState(payload, nextFingerCount, currentState))
+        onPointerTipChange?.(nextPointerTip)
         setFrameToken(payload?.frameToken ?? payload?.updatedAt ?? Date.now())
       } catch {
         if (!isMounted) return
         setConnectionMessage('Waiting for Python/OpenCV gesture bridge...')
         setFingersHeldUp(0)
         setGestureState((currentState) => resolveGestureState(currentState, 0))
+        onPointerTipChange?.(null)
       }
     }
 
@@ -91,7 +109,7 @@ export function OpenCvGestureBridge({
       isMounted = false
       window.clearInterval(intervalId)
     }
-  }, [pollInterval, statusUrl])
+  }, [onPointerTipChange, pollInterval, statusUrl])
 
   useEffect(() => {
     onStateChange?.(gestureState)
@@ -140,4 +158,5 @@ OpenCvGestureBridge.propTypes = {
   pollInterval: PropTypes.number,
   onStateChange: PropTypes.func,
   onFingerCountChange: PropTypes.func,
+  onPointerTipChange: PropTypes.func,
 }

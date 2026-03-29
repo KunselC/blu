@@ -59,7 +59,7 @@ export function PopupMenu({ visible, onSelectChat, onSelectScreenShare, oneFinge
         <MenuButton
           icon={MessageSquareText}
           title="Chat"
-          description="1-finger hold in menu"
+          description="3-second 1-finger hold in menu"
           onClick={onSelectChat}
           progress={oneFingerProgress}
           active={activeFingerCount === 1}

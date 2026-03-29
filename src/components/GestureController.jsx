@@ -3,6 +3,7 @@ import PropTypes from 'prop-types'
 
 export function GestureController({
   holdDuration = 900,
+  holdDurations,
   onHoldProgress,
   onHoldStateChange,
   onOneFingerHold,
@@ -13,6 +14,8 @@ export function GestureController({
     const timers = new Map()
     const starts = new Map()
     const rafs = new Map()
+
+    const getHoldDuration = (fingerCount) => holdDurations?.[fingerCount] ?? holdDuration
 
     const clearHold = (fingerCount) => {
       const timer = timers.get(fingerCount)
@@ -33,8 +36,9 @@ export function GestureController({
     const runProgress = (fingerCount) => {
       const startedAt = starts.get(fingerCount)
       if (!startedAt) return
+      const currentHoldDuration = getHoldDuration(fingerCount)
       const elapsed = Date.now() - startedAt
-      const progress = Math.min(1, elapsed / holdDuration)
+      const progress = Math.min(1, elapsed / currentHoldDuration)
       onHoldProgress(fingerCount, progress, true)
       if (progress < 1) {
         const raf = window.requestAnimationFrame(() => runProgress(fingerCount))
@@ -44,6 +48,7 @@ export function GestureController({
 
     const beginHold = (fingerCount, onComplete) => {
       if (timers.has(fingerCount)) return
+      const currentHoldDuration = getHoldDuration(fingerCount)
       const start = Date.now()
       starts.set(fingerCount, start)
       onHoldStateChange(fingerCount, true)
@@ -53,7 +58,7 @@ export function GestureController({
         onComplete()
         onHoldProgress(fingerCount, 1, false)
         clearHold(fingerCount)
-      }, holdDuration)
+      }, currentHoldDuration)
       timers.set(fingerCount, timer)
     }
 
@@ -87,13 +92,14 @@ export function GestureController({
       window.removeEventListener('keyup', onKeyUp)
       ;[1, 2, 5].forEach(clearHold)
     }
-  }, [holdDuration, onFiveFingerHold, onHoldProgress, onHoldStateChange, onOneFingerHold, onTwoFingerHold])
+  }, [holdDuration, holdDurations, onFiveFingerHold, onHoldProgress, onHoldStateChange, onOneFingerHold, onTwoFingerHold])
 
   return null
 }
 
 GestureController.propTypes = {
   holdDuration: PropTypes.number,
+  holdDurations: PropTypes.objectOf(PropTypes.number),
   onHoldProgress: PropTypes.func.isRequired,
   onHoldStateChange: PropTypes.func.isRequired,
   onOneFingerHold: PropTypes.func.isRequired,
