@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react'
+import PropTypes from 'prop-types'
 
 export function DrawingCanvas({ canDraw }) {
   const canvasRef = useRef(null)
@@ -87,4 +88,8 @@ export function DrawingCanvas({ canDraw }) {
       onPointerLeave={handlePointerUp}
     />
   )
+}
+
+DrawingCanvas.propTypes = {
+  canDraw: PropTypes.bool.isRequired,
 }

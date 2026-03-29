@@ -1,46 +1,107 @@
 import { useEffect } from 'react'
+import PropTypes from 'prop-types'
 
 export function GestureController({
-  onTwoFingerTap,
-  onOneFingerTap,
-  onDrawMode,
-  onVoiceMode,
-  onEscape,
-  onGestureRecognized,
+  holdDuration = 900,
+  onHoldProgress,
+  onHoldStateChange,
+  onOneFingerHold,
+  onTwoFingerHold,
+  onThreeFingerHold,
+  onEscapeHold,
 }) {
   useEffect(() => {
+    const timers = new Map()
+    const starts = new Map()
+    const rafs = new Map()
+
+    const clearHold = (fingerCount) => {
+      const timer = timers.get(fingerCount)
+      if (timer) {
+        window.clearTimeout(timer)
+      }
+      const raf = rafs.get(fingerCount)
+      if (raf) {
+        window.cancelAnimationFrame(raf)
+      }
+      timers.delete(fingerCount)
+      starts.delete(fingerCount)
+      rafs.delete(fingerCount)
+      onHoldProgress(fingerCount, 0, false)
+      onHoldStateChange(fingerCount, false)
+    }
+
+    const runProgress = (fingerCount) => {
+      const startedAt = starts.get(fingerCount)
+      if (!startedAt) return
+      const elapsed = Date.now() - startedAt
+      const progress = Math.min(1, elapsed / holdDuration)
+      onHoldProgress(fingerCount, progress, true)
+      if (progress < 1) {
+        const raf = window.requestAnimationFrame(() => runProgress(fingerCount))
+        rafs.set(fingerCount, raf)
+      }
+    }
+
+    const beginHold = (fingerCount, onComplete) => {
+      if (timers.has(fingerCount)) return
+      const start = Date.now()
+      starts.set(fingerCount, start)
+      onHoldStateChange(fingerCount, true)
+      onHoldProgress(fingerCount, 0, true)
+      runProgress(fingerCount)
+      const timer = window.setTimeout(() => {
+        onComplete()
+        onHoldProgress(fingerCount, 1, false)
+        clearHold(fingerCount)
+      }, holdDuration)
+      timers.set(fingerCount, timer)
+    }
+
     const onKeyDown = (event) => {
+      if (event.repeat) return
       switch (event.key) {
-        case '2':
-          onGestureRecognized('two-finger')
-          onTwoFingerTap()
-          break
         case '1':
-          onGestureRecognized('tap')
-          onOneFingerTap()
+          beginHold(1, onOneFingerHold)
           break
-        case 'd':
-        case 'D':
-          onGestureRecognized('draw')
-          onDrawMode()
+        case '2':
+          beginHold(2, onTwoFingerHold)
           break
-        case 'v':
-        case 'V':
-          onGestureRecognized('voice')
-          onVoiceMode()
+        case '3':
+          beginHold(3, onThreeFingerHold)
           break
         case 'Escape':
-          onGestureRecognized('escape')
-          onEscape()
+          onEscapeHold()
           break
         default:
           break
       }
     }
 
+    const onKeyUp = (event) => {
+      if (event.key === '1' || event.key === '2' || event.key === '3') {
+        clearHold(Number(event.key))
+      }
+    }
+
     window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onDrawMode, onEscape, onGestureRecognized, onOneFingerTap, onTwoFingerTap, onVoiceMode])
+    window.addEventListener('keyup', onKeyUp)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+      ;[1, 2, 3].forEach(clearHold)
+    }
+  }, [holdDuration, onEscapeHold, onHoldProgress, onHoldStateChange, onOneFingerHold, onThreeFingerHold, onTwoFingerHold])
 
   return null
+}
+
+GestureController.propTypes = {
+  holdDuration: PropTypes.number,
+  onHoldProgress: PropTypes.func.isRequired,
+  onHoldStateChange: PropTypes.func.isRequired,
+  onOneFingerHold: PropTypes.func.isRequired,
+  onTwoFingerHold: PropTypes.func.isRequired,
+  onThreeFingerHold: PropTypes.func.isRequired,
+  onEscapeHold: PropTypes.func.isRequired,
 }
