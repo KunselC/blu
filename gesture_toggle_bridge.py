@@ -11,6 +11,7 @@ Install dependencies before running:
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -62,7 +63,7 @@ def resolve_gesture_state(previous_state: str, finger_count: int) -> str:
 
 
 class GestureToggleBridge:
-    def __init__(self, camera_index: int = 0) -> None:
+    def __init__(self, camera_index: int | None = None) -> None:
         self.camera_index = camera_index
         self.state = GESTURE_EMPTY
         self.fingers_held_up = 0
@@ -167,11 +168,36 @@ class GestureToggleBridge:
                         self.state = next_state
                         self.frame_token = int(time.time() * 1000)
                         self.latest_frame_jpeg = encoded.tobytes()
-                        self.message = "Tracking live hand landmarks"
+                        self.message = f"Tracking live hand landmarks on camera {self.camera_index}"
 
                 time.sleep(0.03)
 
         capture.release()
+
+
+def open_camera_capture(preferred_index: int | None) -> tuple["cv2.VideoCapture | None", int | None]:
+    if cv2 is None:
+        return None, None
+
+    indices = [preferred_index] if preferred_index is not None else list(range(4))
+    tried = set()
+
+    for index in indices:
+        if index in tried or index is None:
+            continue
+        tried.add(index)
+        capture = cv2.VideoCapture(index)
+        if not capture.isOpened():
+            capture.release()
+            continue
+
+        ok, _ = capture.read()
+        if ok:
+            return capture, index
+
+        capture.release()
+
+    return None, None
 
 
 def count_extended_fingers(hand_landmarks, handedness_label: str) -> int:
@@ -263,6 +289,26 @@ class GestureRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="OpenCV hand gesture bridge")
+    parser.add_argument("--camera-index", type=int, default=None, help="Preferred OpenCV camera index")
+    return parser.parse_args()
+
+
+def resolve_camera_index(preferred_index: int | None) -> int | None:
+    if preferred_index is not None:
+        return preferred_index
+
+    env_value = os.environ.get("GESTURE_CAMERA_INDEX")
+    if env_value is None or env_value == "":
+        return None
+
+    try:
+        return int(env_value)
+    except ValueError:
+        return None
+
+
 def main() -> None:
     camera_index = int(os.getenv("GESTURE_CAMERA_INDEX", "0"))
     bridge = GestureToggleBridge(camera_index=camera_index)
@@ -272,6 +318,10 @@ def main() -> None:
 
     print("Gesture toggle bridge listening on http://127.0.0.1:8765")
     print("Endpoints: /status and /frame.jpg")
+    if bridge.camera_index is None:
+        print("Camera selection: auto-detect (override with GESTURE_CAMERA_INDEX or --camera-index)")
+    else:
+        print(f"Camera selection: preferred index {bridge.camera_index}")
 
     try:
         camera_thread.start()

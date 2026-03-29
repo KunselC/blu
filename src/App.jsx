@@ -3,7 +3,7 @@ import { Hand, MessageSquareText, X } from 'lucide-react'
 import { io } from 'socket.io-client'
 import { DrawingCanvas } from './components/DrawingCanvas'
 import { GestureController } from './components/GestureController'
-import { OpenCvGestureBridge } from './components/OpenCvGestureBridge'
+import { GESTURE_STATES, OpenCvGestureBridge } from './components/OpenCvGestureBridge'
 import { PopupMenu } from './components/PopupMenu'
 import { VoicePanel } from './components/VoicePanel'
 import { useSpeechTranscription } from './hooks/useSpeechTranscription'
@@ -30,11 +30,15 @@ function App() {
   const [holdProgress, setHoldProgress] = useState({ 1: 0, 2: 0, 5: 0 })
   const [activeHoldFingerCount, setActiveHoldFingerCount] = useState(0)
   const [showVoiceTranslateToggle, setShowVoiceTranslateToggle] = useState(false)
+  const [gestureState, setGestureState] = useState(GESTURE_STATES.EMPTY)
+  const [fingersHeldUp, setFingersHeldUp] = useState(0)
   const [clientId] = useState(() => `client-${Math.random().toString(36).slice(2, 10)}`)
   const screenVideoRef = useRef(null)
   const transcriptionLogRef = useRef(null)
   const screenStreamRef = useRef(null)
   const gestureTimeoutRef = useRef(null)
+  const bridgeHoldRef = useRef({ fingerCount: 0, startAt: 0, timerId: null, rafId: null })
+  const lastBridgeGestureRef = useRef(GESTURE_STATES.EMPTY)
   const socketRef = useRef(null)
   const lastTranscriptRef = useRef('')
   const applyingRemoteTranscriptRef = useRef(false)
@@ -63,6 +67,12 @@ function App() {
       if (gestureTimeoutRef.current) {
         window.clearTimeout(gestureTimeoutRef.current)
       }
+      if (bridgeHoldRef.current.timerId) {
+        window.clearTimeout(bridgeHoldRef.current.timerId)
+      }
+      if (bridgeHoldRef.current.rafId) {
+        window.cancelAnimationFrame(bridgeHoldRef.current.rafId)
+      }
     },
     [],
   )
@@ -78,6 +88,7 @@ function App() {
     screenStreamRef.current?.getTracks().forEach((track) => track.stop())
     screenStreamRef.current = null
     setIsScreenSharing(false)
+    setMode((current) => (current === MODES.SCREEN_SHARE ? MODES.IDLE : current))
   }, [])
 
   useEffect(() => () => stopScreenShare(), [stopScreenShare])
@@ -96,6 +107,7 @@ function App() {
       const message = shareError instanceof Error ? shareError.message : String(shareError)
       setScreenShareError(`Screen share failed: ${message}`)
       setIsScreenSharing(false)
+      setMode((current) => (current === MODES.SCREEN_SHARE ? MODES.IDLE : current))
     }
   }, [stopScreenShare])
 
@@ -186,33 +198,93 @@ function App() {
     )
   }, [])
 
-  const handleFiveFingerHold = useCallback(() => {
+  const exitToBaseState = useCallback(() => {
+    stopScreenShare()
     setMode(MODES.IDLE)
     setShowVoiceTranslateToggle(false)
     setShowSummaryModal(false)
+  }, [stopScreenShare])
+
+  const handleFiveFingerHold = useCallback(() => {
+    exitToBaseState()
     setGestureFlash('5-finger exit')
-  }, [setGestureFlash])
+  }, [exitToBaseState, setGestureFlash])
 
   const handleOneFingerHold = useCallback(() => {
-    setMode((current) => {
-      if (current === MODES.MENU) {
-        setGestureFlash('Chat selected')
-        return MODES.CHAT
-      }
-      return current
-    })
-  }, [setGestureFlash])
+    if (mode !== MODES.MENU) return
+    setGestureFlash('Chat selected')
+    setMode(MODES.CHAT)
+  }, [mode, setGestureFlash])
+
+  const handleScreenShareSelection = useCallback(() => {
+    if (mode !== MODES.MENU) return
+    setGestureFlash('Screen share selected')
+    setMode(MODES.SCREEN_SHARE)
+    startScreenShare()
+  }, [mode, setGestureFlash, startScreenShare])
+
+  const handleChatSelection = useCallback(() => {
+    if (mode !== MODES.MENU) return
+    setGestureFlash('Chat selected')
+    setMode(MODES.CHAT)
+  }, [mode, setGestureFlash])
 
   const handleTwoFingerHold = useCallback(() => {
-    setMode((current) => {
-      if (current === MODES.MENU) {
-        setGestureFlash('Screen share selected')
-        startScreenShare()
-        return MODES.SCREEN_SHARE
+    handleScreenShareSelection()
+  }, [handleScreenShareSelection])
+
+  const clearBridgeHold = useCallback(() => {
+    if (bridgeHoldRef.current.timerId) {
+      window.clearTimeout(bridgeHoldRef.current.timerId)
+    }
+    if (bridgeHoldRef.current.rafId) {
+      window.cancelAnimationFrame(bridgeHoldRef.current.rafId)
+    }
+    const fingerCount = bridgeHoldRef.current.fingerCount
+    bridgeHoldRef.current = { fingerCount: 0, startAt: 0, timerId: null, rafId: null }
+    if (fingerCount) {
+      setHoldProgress((current) => ({ ...current, [fingerCount]: 0 }))
+      setActiveHoldFingerCount((current) => (current === fingerCount ? 0 : current))
+    }
+  }, [])
+
+  const startBridgeHold = useCallback((fingerCount) => {
+    if (![1, 2, 5].includes(fingerCount)) {
+      clearBridgeHold()
+      return
+    }
+
+    if (bridgeHoldRef.current.fingerCount === fingerCount && bridgeHoldRef.current.timerId) {
+      return
+    }
+
+    clearBridgeHold()
+    const startedAt = Date.now()
+
+    const updateProgress = () => {
+      const elapsed = Date.now() - startedAt
+      const progress = Math.min(1, elapsed / 900)
+      setHoldProgress((current) => ({ ...current, [fingerCount]: progress }))
+      if (progress < 1) {
+        bridgeHoldRef.current.rafId = window.requestAnimationFrame(updateProgress)
       }
-      return current
-    })
-  }, [setGestureFlash, startScreenShare])
+    }
+
+    bridgeHoldRef.current = {
+      fingerCount,
+      startAt: startedAt,
+      rafId: window.requestAnimationFrame(updateProgress),
+      timerId: window.setTimeout(() => {
+        if (fingerCount === 1) handleOneFingerHold()
+        if (fingerCount === 2) handleTwoFingerHold()
+        if (fingerCount === 5) handleFiveFingerHold()
+        clearBridgeHold()
+      }, 900),
+    }
+
+    setActiveHoldFingerCount(fingerCount)
+    setHoldProgress((current) => ({ ...current, [fingerCount]: 0 }))
+  }, [clearBridgeHold, handleFiveFingerHold, handleOneFingerHold, handleTwoFingerHold])
 
   const sendChatMessage = useCallback(() => {
     const nextMessage = chatInput.trim()
@@ -253,6 +325,45 @@ function App() {
         : '- No conversation captured yet.'
     return `Summary of Conversation:\n${bulletPoints}`
   }, [transcriptionLog])
+
+  useEffect(() => {
+    if (!isMenuOpen) {
+      clearBridgeHold()
+      return
+    }
+
+    if ([1, 2, 5].includes(fingersHeldUp)) {
+      startBridgeHold(fingersHeldUp)
+      return
+    }
+
+    clearBridgeHold()
+  }, [clearBridgeHold, fingersHeldUp, isMenuOpen, startBridgeHold])
+
+  useEffect(() => {
+    if (mode === MODES.CHAT || mode === MODES.SCREEN_SHARE) {
+      lastBridgeGestureRef.current = gestureState
+      return
+    }
+
+    if (gestureState === lastBridgeGestureRef.current) return
+
+    if (gestureState === GESTURE_STATES.DRAWING) {
+      setMode(MODES.DRAWING)
+      setGestureFlash('1 finger: drawing')
+    } else if (gestureState === GESTURE_STATES.VOICE) {
+      setShowVoiceTranslateToggle(true)
+      setMode(MODES.VOICE)
+      setGestureFlash('2 fingers: voice')
+    } else if (gestureState === GESTURE_STATES.MENU) {
+      setMode(MODES.MENU)
+      setGestureFlash('3 fingers: menu')
+    } else if (gestureState === GESTURE_STATES.EMPTY) {
+      setMode((current) => (current === MODES.DRAWING || current === MODES.VOICE || current === MODES.MENU ? MODES.IDLE : current))
+    }
+
+    lastBridgeGestureRef.current = gestureState
+  }, [gestureState, mode, setGestureFlash])
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-gradient-to-br from-slate-50 to-slate-100 text-slate-700">
@@ -333,11 +444,8 @@ function App() {
             <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center">
               <PopupMenu
                 visible={isMenuOpen}
-                onSelectChat={() => setMode(MODES.CHAT)}
-                onSelectScreenShare={() => {
-                  setMode(MODES.SCREEN_SHARE)
-                  startScreenShare()
-                }}
+                onSelectChat={handleChatSelection}
+                onSelectScreenShare={handleScreenShareSelection}
                 oneFingerProgress={holdProgress[1]}
                 twoFingerProgress={holdProgress[2]}
                 activeFingerCount={activeHoldFingerCount}
@@ -369,10 +477,38 @@ function App() {
             <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl border border-dashed border-slate-600 bg-slate-800/60">
               {isScreenSharing ? (
                 <video ref={screenVideoRef} autoPlay playsInline muted className="h-full w-full object-contain" />
+              ) : isChatMode ? (
+                <div className="flex h-full items-center justify-center px-6 text-center text-slate-300">
+                  <div>
+                    <p className="text-sm font-medium text-slate-100">Chat mode active</p>
+                    <p className="mt-2 text-[11px] text-slate-400">
+                      The gesture camera is paused while the text chat is open.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={exitToBaseState}
+                      className="mt-4 rounded-lg bg-slate-700 px-3 py-2 text-xs font-medium text-white ring-1 ring-slate-600"
+                    >
+                      Exit Chat
+                    </button>
+                  </div>
+                </div>
               ) : (
-                <OpenCvGestureBridge />
+                <OpenCvGestureBridge
+                  onStateChange={setGestureState}
+                  onFingerCountChange={setFingersHeldUp}
+                />
               )}
             </div>
+            {isScreenSharing ? (
+              <button
+                type="button"
+                onClick={exitToBaseState}
+                className="mt-2 rounded-lg bg-slate-700 px-3 py-2 text-xs font-medium text-white ring-1 ring-slate-600"
+              >
+                Stop Sharing
+              </button>
+            ) : null}
             {screenShareError ? <p className="mt-2 text-[11px] text-rose-300">{screenShareError}</p> : null}
           </section>
         </div>
@@ -405,7 +541,7 @@ function App() {
             }`}
           >
             <Hand size={13} />
-            {gestureFeedback.label} (Hold keys 1/2/5)
+            {gestureFeedback.label} (OpenCV live, keys 1/2/5 simulate menu holds)
           </span>
         </div>
       </div>
