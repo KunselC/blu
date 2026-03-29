@@ -1,9 +1,22 @@
 import { useCallback, useEffect, useRef } from 'react'
 import PropTypes from 'prop-types'
 
-export function DrawingCanvas({ canDraw }) {
+const drawSegment = (ctx, segment, width, height) => {
+  const fromX = segment.from.x * width
+  const fromY = segment.from.y * height
+  const toX = segment.to.x * width
+  const toY = segment.to.y * height
+  ctx.beginPath()
+  ctx.moveTo(fromX, fromY)
+  ctx.lineTo(toX, toY)
+  ctx.stroke()
+}
+
+export function DrawingCanvas({ canDraw, segments, onSegmentDraw }) {
   const canvasRef = useRef(null)
   const drawingRef = useRef(false)
+  const lastPointRef = useRef(null)
+  const lastRenderedCountRef = useRef(0)
 
   const resizeCanvas = useCallback(() => {
     const canvas = canvasRef.current
@@ -14,7 +27,6 @@ export function DrawingCanvas({ canDraw }) {
 
     const nextWidth = parent.clientWidth
     const nextHeight = parent.clientHeight
-    const imageData = canvas.getContext('2d')?.getImageData(0, 0, canvas.width, canvas.height)
     canvas.width = nextWidth
     canvas.height = nextHeight
 
@@ -25,11 +37,10 @@ export function DrawingCanvas({ canDraw }) {
     ctx.lineJoin = 'round'
     ctx.lineWidth = 3
     ctx.strokeStyle = '#1f2937'
-
-    if (imageData) {
-      ctx.putImageData(imageData, 0, 0)
-    }
-  }, [])
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    segments.forEach((segment) => drawSegment(ctx, segment, canvas.width, canvas.height))
+    lastRenderedCountRef.current = segments.length
+  }, [segments])
 
   useEffect(() => {
     resizeCanvas()
@@ -41,41 +52,55 @@ export function DrawingCanvas({ canDraw }) {
     return () => observer.disconnect()
   }, [resizeCanvas])
 
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const ctx = canvas?.getContext('2d')
+    if (!canvas || !ctx) return
+    if (segments.length < lastRenderedCountRef.current) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      segments.forEach((segment) => drawSegment(ctx, segment, canvas.width, canvas.height))
+      lastRenderedCountRef.current = segments.length
+      return
+    }
+    segments.slice(lastRenderedCountRef.current).forEach((segment) => drawSegment(ctx, segment, canvas.width, canvas.height))
+    lastRenderedCountRef.current = segments.length
+  }, [segments])
+
   const drawFromEvent = (event) => {
     if (!canDraw || !drawingRef.current) return
 
     const canvas = canvasRef.current
-    const ctx = canvas?.getContext('2d')
-    if (!canvas || !ctx) return
+    if (!canvas || !lastPointRef.current) return
 
     const rect = canvas.getBoundingClientRect()
-    const x = event.clientX - rect.left
-    const y = event.clientY - rect.top
-
-    ctx.lineTo(x, y)
-    ctx.stroke()
-    ctx.beginPath()
-    ctx.moveTo(x, y)
+    const currentPoint = {
+      x: Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)),
+      y: Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)),
+    }
+    onSegmentDraw({
+      from: lastPointRef.current,
+      to: currentPoint,
+    })
+    lastPointRef.current = currentPoint
   }
 
   const handlePointerDown = (event) => {
     if (!canDraw) return
 
     const canvas = canvasRef.current
-    const ctx = canvas?.getContext('2d')
-    if (!canvas || !ctx) return
+    if (!canvas) return
 
     const rect = canvas.getBoundingClientRect()
-    const x = event.clientX - rect.left
-    const y = event.clientY - rect.top
+    const x = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width))
+    const y = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height))
 
     drawingRef.current = true
-    ctx.beginPath()
-    ctx.moveTo(x, y)
+    lastPointRef.current = { x, y }
   }
 
   const handlePointerUp = () => {
     drawingRef.current = false
+    lastPointRef.current = null
   }
 
   return (
@@ -92,4 +117,17 @@ export function DrawingCanvas({ canDraw }) {
 
 DrawingCanvas.propTypes = {
   canDraw: PropTypes.bool.isRequired,
+  segments: PropTypes.arrayOf(
+    PropTypes.shape({
+      from: PropTypes.shape({
+        x: PropTypes.number.isRequired,
+        y: PropTypes.number.isRequired,
+      }).isRequired,
+      to: PropTypes.shape({
+        x: PropTypes.number.isRequired,
+        y: PropTypes.number.isRequired,
+      }).isRequired,
+    }),
+  ).isRequired,
+  onSegmentDraw: PropTypes.func.isRequired,
 }

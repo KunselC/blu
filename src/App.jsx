@@ -7,7 +7,9 @@ import { VoicePanel } from './components/VoicePanel'
 import { useSpeechTranscription } from './hooks/useSpeechTranscription'
 import { MODES } from './lib/modes'
 
-const TRANSCRIPT_LOG_KEY = 'vboard-transcription-log'
+const SHARED_STATE_KEY = 'vboard-shared-session-v1'
+const CLIENT_ID_KEY = 'vboard-client-id'
+const MAX_DRAW_SEGMENTS = 6000
 const translateText = (text) => text
 const insightTemplates = [
   'Decision-making is converging, with speakers aligning on immediate next steps.',
@@ -15,6 +17,29 @@ const insightTemplates = [
   'A short recap: active discussion, open questions reduced, direction becoming clearer.',
   'Team focus appears to be narrowing around implementation details and timing.',
 ]
+
+const readSharedState = () => {
+  const raw = window.localStorage.getItem(SHARED_STATE_KEY)
+  if (!raw) {
+    return {
+      chatMessages: [],
+      transcriptionLog: [],
+      drawingSegments: [],
+      liveTranscript: '',
+    }
+  }
+  try {
+    return JSON.parse(raw)
+  } catch (error) {
+    console.error('Failed to parse shared session state', error)
+    return {
+      chatMessages: [],
+      transcriptionLog: [],
+      drawingSegments: [],
+      liveTranscript: '',
+    }
+  }
+}
 
 function App() {
   const [mode, setMode] = useState(MODES.IDLE)
@@ -28,7 +53,8 @@ function App() {
   const [isSplitScreen, setIsSplitScreen] = useState(true)
   const [isChatOpen, setIsChatOpen] = useState(false)
   const [chatInput, setChatInput] = useState('')
-  const [chatMessages, setChatMessages] = useState([])
+  const [chatMessages, setChatMessages] = useState(() => readSharedState().chatMessages ?? [])
+  const [drawingSegments, setDrawingSegments] = useState(() => readSharedState().drawingSegments ?? [])
   const [, setTranscriptMoments] = useState([])
   const [liveInsight, setLiveInsight] = useState('Listening for context to generate live insights...')
   const [gestureFeedback, setGestureFeedback] = useState({ label: 'Idle', active: false })
@@ -36,15 +62,14 @@ function App() {
   const [activeHoldFingerCount, setActiveHoldFingerCount] = useState(0)
   const [drawHoldActive, setDrawHoldActive] = useState(false)
   const [showVoiceTranslateToggle, setShowVoiceTranslateToggle] = useState(false)
-  const [transcriptionLog, setTranscriptionLog] = useState(() => {
-    const raw = window.localStorage.getItem(TRANSCRIPT_LOG_KEY)
-    if (!raw) return []
-    try {
-      return JSON.parse(raw)
-    } catch (error) {
-      console.error('Failed to parse transcription history', error)
-      return []
-    }
+  const [transcriptionLog, setTranscriptionLog] = useState(() => readSharedState().transcriptionLog ?? [])
+  const [userLabel, setUserLabel] = useState('User A')
+  const [clientId] = useState(() => {
+    const existingId = window.localStorage.getItem(CLIENT_ID_KEY)
+    if (existingId) return existingId
+    const nextId = `client-${Math.random().toString(36).slice(2, 10)}`
+    window.localStorage.setItem(CLIENT_ID_KEY, nextId)
+    return nextId
   })
   const screenVideoRef = useRef(null)
   const splitContainerRef = useRef(null)
@@ -71,8 +96,36 @@ function App() {
   const isVoiceMode = mode === MODES.VOICE
 
   useEffect(() => {
-    window.localStorage.setItem(TRANSCRIPT_LOG_KEY, JSON.stringify(transcriptionLog))
-  }, [transcriptionLog])
+    window.localStorage.setItem(
+      SHARED_STATE_KEY,
+      JSON.stringify({
+        chatMessages,
+        transcriptionLog,
+        drawingSegments,
+        liveTranscript: transcript,
+        updatedBy: clientId,
+      }),
+    )
+  }, [chatMessages, transcriptionLog, drawingSegments, transcript, clientId])
+
+  useEffect(() => {
+    const handleStorage = (event) => {
+      if (event.key !== SHARED_STATE_KEY || !event.newValue) return
+      try {
+        const nextState = JSON.parse(event.newValue)
+        if (nextState.updatedBy === clientId) return
+        setChatMessages(Array.isArray(nextState.chatMessages) ? nextState.chatMessages : [])
+        setTranscriptionLog(Array.isArray(nextState.transcriptionLog) ? nextState.transcriptionLog : [])
+        setDrawingSegments(Array.isArray(nextState.drawingSegments) ? nextState.drawingSegments : [])
+        setTranscript(typeof nextState.liveTranscript === 'string' ? nextState.liveTranscript : '')
+      } catch (error) {
+        console.error('Failed to apply shared session update', error)
+      }
+    }
+
+    window.addEventListener('storage', handleStorage)
+    return () => window.removeEventListener('storage', handleStorage)
+  }, [clientId, setTranscript])
 
   useEffect(() => {
     const latestText = displayTranscript.trim()
@@ -242,9 +295,16 @@ function App() {
   const sendChatMessage = useCallback(() => {
     const nextMessage = chatInput.trim()
     if (!nextMessage) return
-    setChatMessages((current) => [...current, { id: Date.now(), text: nextMessage }])
+    setChatMessages((current) => [
+      ...current,
+      { id: Date.now(), text: nextMessage, user: userLabel, senderId: clientId },
+    ])
     setChatInput('')
-  }, [chatInput])
+  }, [chatInput, userLabel, clientId])
+
+  const handleSegmentDraw = useCallback((segment) => {
+    setDrawingSegments((current) => [...current.slice(-(MAX_DRAW_SEGMENTS - 1)), segment])
+  }, [])
 
   const handleEscape = useCallback(() => {
     handleThreeFingerHold()
@@ -307,6 +367,17 @@ function App() {
         <div className="flex items-center justify-between gap-3 text-xs">
           <div className="flex items-center gap-2">
             <span className="rounded-lg bg-slate-100 px-2 py-1 font-semibold text-slate-700">Global Mode: {modeLabel}</span>
+            <label className="inline-flex items-center gap-2 rounded-lg bg-slate-100 px-2 py-1 text-slate-700">
+              <span className="font-semibold">User</span>
+              <select
+                value={userLabel}
+                onChange={(event) => setUserLabel(event.target.value)}
+                className="rounded bg-white px-1 py-0.5 text-xs text-slate-700"
+              >
+                <option value="User A">User A</option>
+                <option value="User B">User B</option>
+              </select>
+            </label>
             <span
               className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 ring-1 transition ${
                 gestureFeedback.active ? 'bg-emerald-100 text-emerald-700 ring-emerald-300' : 'bg-white text-slate-500 ring-slate-200'
@@ -361,7 +432,7 @@ function App() {
 
         <div ref={splitContainerRef} className="relative flex flex-1">
           <section className="relative rounded-2xl bg-white/40 shadow ring-1 ring-slate-200" style={{ width: `${splitRatio * 100}%` }}>
-            <DrawingCanvas canDraw={isDrawing && drawHoldActive} />
+             <DrawingCanvas canDraw={isDrawing && drawHoldActive} segments={drawingSegments} onSegmentDraw={handleSegmentDraw} />
 
             <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center">
               <PopupMenu
@@ -447,8 +518,14 @@ function App() {
         <div className="flex-1 space-y-2 overflow-y-auto rounded-xl bg-slate-50 p-2 ring-1 ring-slate-100">
           {chatMessages.length === 0 ? <p className="text-xs text-slate-400">No messages yet.</p> : null}
           {chatMessages.map((message) => (
-            <div key={message.id} className="ml-auto max-w-[85%] rounded-lg bg-slate-700 px-2 py-1 text-xs text-white">
-              {message.text}
+            <div
+              key={`${message.id}-${message.senderId ?? 'sender'}`}
+              className={`max-w-[85%] rounded-lg px-2 py-1 text-xs ${
+                message.user === userLabel ? 'ml-auto bg-slate-700 text-white' : 'mr-auto bg-white text-slate-700 ring-1 ring-slate-200'
+              }`}
+            >
+              <p className="mb-0.5 text-[10px] font-semibold opacity-75">{message.user ?? 'User'}</p>
+              <p>{message.text}</p>
             </div>
           ))}
         </div>
