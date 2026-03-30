@@ -6,6 +6,7 @@ const drawSegment = (ctx, segment, width, height) => {
   const fromY = segment.from.y * height
   const toX = segment.to.x * width
   const toY = segment.to.y * height
+  ctx.strokeStyle = segment.color ?? '#1f2937'
   ctx.beginPath()
   ctx.moveTo(fromX, fromY)
   ctx.lineTo(toX, toY)
@@ -36,7 +37,6 @@ export function DrawingCanvas({ canDraw, segments, onSegmentDraw, enablePointerI
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
     ctx.lineWidth = 3
-    ctx.strokeStyle = '#1f2937'
     ctx.clearRect(0, 0, canvas.width, canvas.height)
     segments.forEach((segment) => drawSegment(ctx, segment, canvas.width, canvas.height))
     lastRenderedCountRef.current = segments.length

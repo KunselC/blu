@@ -89,4 +89,5 @@ if /i "%ROLE%"=="host" (
 
 echo Starting Vite app...
 set "VITE_SOCKET_URL=%SOCKET_URL%"
+set "VITE_ROOM_ROLE=%ROLE%"
 call npm run dev -- --host 0.0.0.0

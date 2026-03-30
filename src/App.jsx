@@ -11,12 +11,16 @@ import { MODES } from './lib/modes'
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? 'http://localhost:3001'
 const GESTURE_EXIT_PULSE_URL = import.meta.env.VITE_GESTURE_EXIT_PULSE_URL ?? 'http://127.0.0.1:8765/pulse-exit'
+const GESTURE_FRAME_URL = import.meta.env.VITE_GESTURE_FRAME_URL ?? 'http://127.0.0.1:8765/frame.jpg'
+const ROOM_ROLE = import.meta.env.VITE_ROOM_ROLE === 'host' ? 'host' : 'join'
 const DEFAULT_HOLD_DURATION = 900
 const CHAT_SELECTION_HOLD_DURATION = 3000
 const BOARD_CLEAR_HOLD_DURATION = 7000
 const MAX_DRAW_SEGMENTS = 6000
 const MAX_CHAT_MESSAGES = 200
 const MAX_TRANSCRIPT_LOG = 500
+const LOCAL_DRAW_COLOR = '#10b981'
+const REMOTE_DRAW_COLOR = '#2563eb'
 const translateText = (text) => text
 
 function App() {
@@ -30,6 +34,8 @@ function App() {
   const [chatMessages, setChatMessages] = useState([])
   const [drawingSegments, setDrawingSegments] = useState([])
   const [transcriptionLog, setTranscriptionLog] = useState([])
+  const [participantStates, setParticipantStates] = useState({})
+  const [liveTranscripts, setLiveTranscripts] = useState({})
   const [gestureFeedback, setGestureFeedback] = useState({ label: 'Idle', active: false })
   const [holdProgress, setHoldProgress] = useState({ 1: 0, 2: 0, 5: 0 })
   const [activeHoldFingerCount, setActiveHoldFingerCount] = useState(0)
@@ -39,6 +45,7 @@ function App() {
   const [pointerTip, setPointerTip] = useState(null)
   const [clientId] = useState(() => `client-${Math.random().toString(36).slice(2, 10)}`)
   const screenVideoRef = useRef(null)
+  const latestCameraFrameRef = useRef('')
   const transcriptionLogRef = useRef(null)
   const screenStreamRef = useRef(null)
   const gestureTimeoutRef = useRef(null)
@@ -48,7 +55,6 @@ function App() {
   const lastFingerDrawPointRef = useRef(null)
   const socketRef = useRef(null)
   const lastTranscriptRef = useRef('')
-  const applyingRemoteTranscriptRef = useRef(false)
   const getHoldDurationForFinger = useCallback(
     (fingerCount) => (fingerCount === 1 ? CHAT_SELECTION_HOLD_DURATION : DEFAULT_HOLD_DURATION),
     [],
@@ -66,6 +72,19 @@ function App() {
   const displayTranscript = useMemo(
     () => (translateEnabled ? translateText(transcript) : transcript),
     [transcript, translateEnabled],
+  )
+
+  const remoteParticipant = useMemo(
+    () => Object.values(participantStates).find((participant) => participant?.senderId !== clientId) ?? null,
+    [clientId, participantStates],
+  )
+
+  const normalizeSegmentColor = useCallback(
+    (segment) => ({
+      ...segment,
+      color: segment?.senderId === clientId ? LOCAL_DRAW_COLOR : REMOTE_DRAW_COLOR,
+    }),
+    [clientId],
   )
 
   const isMenuOpen = mode === MODES.MENU
@@ -135,14 +154,23 @@ function App() {
     const socket = io(SOCKET_URL, { transports: ['websocket'] })
     socketRef.current = socket
 
+    socket.on('connect', () => {
+      socket.emit('participant:join', { senderId: clientId, role: ROOM_ROLE })
+    })
+
     socket.on('session:snapshot', (snapshot) => {
       setChatMessages(Array.isArray(snapshot.chatMessages) ? snapshot.chatMessages : [])
-      setDrawingSegments(Array.isArray(snapshot.drawingSegments) ? snapshot.drawingSegments : [])
+      setDrawingSegments(
+        Array.isArray(snapshot.drawingSegments) ? snapshot.drawingSegments.map(normalizeSegmentColor) : [],
+      )
       setTranscriptionLog(Array.isArray(snapshot.transcriptionLog) ? snapshot.transcriptionLog : [])
-      if (typeof snapshot.liveTranscript === 'string') {
-        applyingRemoteTranscriptRef.current = true
-        setTranscript(snapshot.liveTranscript)
-        lastTranscriptRef.current = snapshot.liveTranscript
+      setParticipantStates(snapshot?.participantStates && typeof snapshot.participantStates === 'object' ? snapshot.participantStates : {})
+      setLiveTranscripts(snapshot?.liveTranscripts && typeof snapshot.liveTranscripts === 'object' ? snapshot.liveTranscripts : {})
+
+      const localTranscript = snapshot?.liveTranscripts?.[clientId]?.text
+      if (typeof localTranscript === 'string' && localTranscript) {
+        setTranscript(localTranscript)
+        lastTranscriptRef.current = localTranscript
       }
     })
 
@@ -153,7 +181,10 @@ function App() {
 
     socket.on('drawing:segment', (payload) => {
       if (payload?.senderId === clientId || !payload?.segment) return
-      setDrawingSegments((current) => [...current.slice(-(MAX_DRAW_SEGMENTS - 1)), payload.segment])
+      setDrawingSegments((current) => [
+        ...current.slice(-(MAX_DRAW_SEGMENTS - 1)),
+        normalizeSegmentColor(payload.segment),
+      ])
     })
 
     socket.on('drawing:clear', () => {
@@ -161,34 +192,80 @@ function App() {
       lastFingerDrawPointRef.current = null
     })
 
+    socket.on('participant:upsert', (participant) => {
+      if (!participant?.senderId) return
+      setParticipantStates((current) => ({
+        ...current,
+        [participant.senderId]: {
+          ...current[participant.senderId],
+          ...participant,
+        },
+      }))
+    })
+
+    socket.on('participant:remove', ({ senderId }) => {
+      if (!senderId) return
+      setParticipantStates((current) => {
+        const next = { ...current }
+        delete next[senderId]
+        return next
+      })
+    })
+
     socket.on('transcript:append', (payload) => {
       if (payload?.senderId === clientId || typeof payload?.segment !== 'string') return
       const nextSegment = payload.segment.trim()
       if (!nextSegment) return
-      setTranscriptionLog((current) => [...current.slice(-(MAX_TRANSCRIPT_LOG - 1)), nextSegment])
+      setTranscriptionLog((current) => [
+        ...current.slice(-(MAX_TRANSCRIPT_LOG - 1)),
+        {
+          senderId: payload.senderId,
+          role: payload?.role === 'host' ? 'host' : 'join',
+          segment: nextSegment,
+        },
+      ])
     })
 
     socket.on('transcript:update', (payload) => {
-      if (payload?.senderId === clientId || typeof payload?.text !== 'string') return
-      applyingRemoteTranscriptRef.current = true
-      setTranscript(payload.text)
-      lastTranscriptRef.current = payload.text
+      if (typeof payload?.senderId !== 'string' || typeof payload?.text !== 'string') return
+      setLiveTranscripts((current) => ({
+        ...current,
+        [payload.senderId]: {
+          senderId: payload.senderId,
+          role: payload?.role === 'host' ? 'host' : 'join',
+          text: payload.text,
+        },
+      }))
+    })
+
+    socket.on('transcript:remove', ({ senderId }) => {
+      if (!senderId) return
+      setLiveTranscripts((current) => {
+        const next = { ...current }
+        delete next[senderId]
+        return next
+      })
     })
 
     return () => {
       socket.disconnect()
       socketRef.current = null
     }
-  }, [clientId, setTranscript])
+  }, [clientId, normalizeSegmentColor, setTranscript])
 
   useEffect(() => {
     const latestText = displayTranscript.trim()
-    if (applyingRemoteTranscriptRef.current) {
-      applyingRemoteTranscriptRef.current = false
-      return
-    }
-
     const previousText = lastTranscriptRef.current.trim()
+    setLiveTranscripts((current) => ({
+      ...current,
+      [clientId]: {
+        senderId: clientId,
+        role: ROOM_ROLE,
+        text: latestText,
+      },
+    }))
+    socketRef.current?.emit('transcript:update', { text: latestText, senderId: clientId, role: ROOM_ROLE })
+
     if (!latestText) {
       lastTranscriptRef.current = ''
       return
@@ -199,12 +276,15 @@ function App() {
       ? latestText.slice(previousText.length).trim()
       : latestText
     if (nextSegment) {
-      setTranscriptionLog((currentLog) => [...currentLog.slice(-(MAX_TRANSCRIPT_LOG - 1)), nextSegment])
-      socketRef.current?.emit('transcript:append', { segment: nextSegment, senderId: clientId })
+      const payload = { segment: nextSegment, senderId: clientId, role: ROOM_ROLE }
+      setTranscriptionLog((currentLog) => [
+        ...currentLog.slice(-(MAX_TRANSCRIPT_LOG - 1)),
+        payload,
+      ])
+      socketRef.current?.emit('transcript:append', payload)
     }
-    socketRef.current?.emit('transcript:update', { text: latestText, senderId: clientId })
     lastTranscriptRef.current = latestText
-  }, [displayTranscript, clientId])
+  }, [clientId, displayTranscript])
 
   const setGestureFlash = useCallback((label) => {
     setGestureFeedback({ label, active: true })
@@ -328,8 +408,13 @@ function App() {
   }, [chatInput, clientId])
 
   const handleSegmentDraw = useCallback((segment) => {
-    setDrawingSegments((current) => [...current.slice(-(MAX_DRAW_SEGMENTS - 1)), segment])
-    socketRef.current?.emit('drawing:segment', { segment, senderId: clientId })
+    const payload = {
+      ...segment,
+      senderId: clientId,
+      color: LOCAL_DRAW_COLOR,
+    }
+    setDrawingSegments((current) => [...current.slice(-(MAX_DRAW_SEGMENTS - 1)), payload])
+    socketRef.current?.emit('drawing:segment', { segment: payload, senderId: clientId })
   }, [clientId])
 
   const clearWhiteboard = useCallback(() => {
@@ -364,6 +449,90 @@ function App() {
   }, [fingersHeldUp, handleSegmentDraw, isDrawing, pointerTip])
 
   useEffect(() => {
+    const localParticipant = {
+      senderId: clientId,
+      role: ROOM_ROLE,
+      pointerTip,
+      gestureState,
+      fingersHeldUp,
+    }
+    setParticipantStates((current) => ({
+      ...current,
+      [clientId]: {
+        ...current[clientId],
+        ...localParticipant,
+      },
+    }))
+    socketRef.current?.emit('participant:state', localParticipant)
+  }, [clientId, fingersHeldUp, gestureState, pointerTip])
+
+  useEffect(() => {
+    let isActive = true
+    let timeoutId = null
+
+    const publishEmptyFrame = () => {
+      latestCameraFrameRef.current = ''
+      setParticipantStates((current) => ({
+        ...current,
+        [clientId]: {
+          ...current[clientId],
+          senderId: clientId,
+          role: ROOM_ROLE,
+          cameraFrame: null,
+        },
+      }))
+      socketRef.current?.emit('camera:frame', { senderId: clientId, role: ROOM_ROLE, frame: null })
+    }
+
+    const blobToDataUrl = (blob) =>
+      new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onloadend = () => resolve(typeof reader.result === 'string' ? reader.result : '')
+        reader.onerror = () => reject(reader.error)
+        reader.readAsDataURL(blob)
+      })
+
+    const pushFrame = async () => {
+      if (!isActive) return
+      if (isChatMode || isScreenSharing) {
+        publishEmptyFrame()
+        return
+      }
+
+      try {
+        const response = await fetch(`${GESTURE_FRAME_URL}?t=${Date.now()}`, { cache: 'no-store' })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const frame = await blobToDataUrl(await response.blob())
+        if (!isActive || !frame || frame === latestCameraFrameRef.current) return
+        latestCameraFrameRef.current = frame
+        setParticipantStates((current) => ({
+          ...current,
+          [clientId]: {
+            ...current[clientId],
+            senderId: clientId,
+            role: ROOM_ROLE,
+            cameraFrame: frame,
+          },
+        }))
+        socketRef.current?.emit('camera:frame', { senderId: clientId, role: ROOM_ROLE, frame })
+      } catch {
+        publishEmptyFrame()
+      } finally {
+        if (isActive) {
+          timeoutId = window.setTimeout(pushFrame, 450)
+        }
+      }
+    }
+
+    pushFrame()
+
+    return () => {
+      isActive = false
+      if (timeoutId) window.clearTimeout(timeoutId)
+    }
+  }, [clientId, isChatMode, isScreenSharing])
+
+  useEffect(() => {
     if (fingersHeldUp === 5) {
       if (boardClearHoldRef.current.timerId) return
       boardClearHoldRef.current.timerId = window.setTimeout(() => {
@@ -396,11 +565,21 @@ function App() {
     }
   }, [mode])
 
+  const hostTranscript = useMemo(
+    () => Object.values(liveTranscripts).find((entry) => entry?.role === 'host')?.text ?? '',
+    [liveTranscripts],
+  )
+
+  const guestTranscript = useMemo(
+    () => Object.values(liveTranscripts).find((entry) => entry?.role === 'join')?.text ?? '',
+    [liveTranscripts],
+  )
+
   const summaryText = useMemo(() => {
     const recentItems = transcriptionLog.slice(-5)
     const bulletPoints =
       recentItems.length > 0
-        ? recentItems.map((item) => `- ${item}`).join('\n')
+        ? recentItems.map((item) => `- ${(item?.role === 'host' ? 'Host' : 'Guest')}: ${item?.segment ?? ''}`).join('\n')
         : '- No conversation captured yet.'
     return `Summary of Conversation:\n${bulletPoints}`
   }, [transcriptionLog])
@@ -469,17 +648,26 @@ function App() {
       <main className="h-full px-4 pb-20 pt-14">
         <div className="grid h-full grid-cols-[280px_minmax(0,1fr)_320px] gap-4">
           <aside className="flex min-h-0 flex-col rounded-2xl bg-white/35 p-4 shadow ring-1 ring-white/50 backdrop-blur-md">
-            <h2 className="mb-3 text-sm font-semibold text-slate-700">Caption Log</h2>
+            <h2 className="mb-3 text-sm font-semibold text-slate-700">Transcript Streams</h2>
             <div ref={transcriptionLogRef} className="min-h-0 flex-1 space-y-2 overflow-y-auto rounded-xl bg-white/60 p-3 ring-1 ring-white/60">
-              {transcriptionLog.length === 0 ? (
-                <p className="text-xs text-slate-500">No transcriptions yet.</p>
-              ) : (
-                transcriptionLog.map((entry, index) => (
-                  <p key={`${entry}-${index}`} className="rounded-lg bg-white/80 px-2 py-1 text-xs text-slate-700">
-                    {entry}
-                  </p>
-                ))
-              )}
+              <div className="rounded-xl bg-emerald-50/90 p-3 ring-1 ring-emerald-200">
+                <div className="mb-2 flex items-center justify-between">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Host</h3>
+                  {ROOM_ROLE === 'host' ? <span className="text-[10px] font-medium text-emerald-600">You</span> : null}
+                </div>
+                <p className="min-h-16 whitespace-pre-wrap text-xs text-emerald-950">
+                  {hostTranscript || 'No host transcript yet.'}
+                </p>
+              </div>
+              <div className="rounded-xl bg-blue-50/90 p-3 ring-1 ring-blue-200">
+                <div className="mb-2 flex items-center justify-between">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-blue-700">Guest</h3>
+                  {ROOM_ROLE === 'join' ? <span className="text-[10px] font-medium text-blue-600">You</span> : null}
+                </div>
+                <p className="min-h-16 whitespace-pre-wrap text-xs text-blue-950">
+                  {guestTranscript || 'No guest transcript yet.'}
+                </p>
+              </div>
             </div>
             <div className="mt-3 flex min-h-0 flex-1 flex-col rounded-xl bg-white/60 p-2 ring-1 ring-white/60">
               <div className="mb-2 flex items-center justify-between">
@@ -548,6 +736,33 @@ function App() {
                 </div>
               </div>
             ) : null}
+            {remoteParticipant?.pointerTip ? (
+              <div className="pointer-events-none absolute inset-0 z-20">
+                <div
+                  className="absolute"
+                  style={{
+                    left: `${remoteParticipant.pointerTip.x * 100}%`,
+                    top: `${remoteParticipant.pointerTip.y * 100}%`,
+                    transform: 'translate(-50%, -90%)',
+                  }}
+                >
+                  <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+                    <path
+                      d="M14 3.5c1.2 0 2.3.7 2.9 1.8l7.1 13c1 1.8-.3 4.1-2.4 4.1H6.4c-2.1 0-3.4-2.3-2.4-4.1l7.1-13A3.3 3.3 0 0 1 14 3.5Z"
+                      fill="rgba(37, 99, 235, 0.88)"
+                      stroke="rgba(29, 78, 216, 0.95)"
+                      strokeWidth="1.5"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="M14 7.5 19 17H9l5-9.5Z"
+                      fill="rgba(239, 246, 255, 0.95)"
+                      stroke="none"
+                    />
+                  </svg>
+                </div>
+              </div>
+            ) : null}
             <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center">
               <PopupMenu
                 visible={isMenuOpen}
@@ -582,6 +797,17 @@ function App() {
           <section className="flex min-h-0 flex-col rounded-2xl bg-slate-900/80 p-4 text-xs text-slate-200 shadow-lg ring-1 ring-slate-700/60">
             <h2 className="mb-2 font-semibold text-slate-100">Camera Feed</h2>
             <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl border border-dashed border-slate-600 bg-slate-800/60">
+              {remoteParticipant?.cameraFrame ? (
+                <div className="pointer-events-none absolute inset-x-3 top-3 z-20 flex justify-end">
+                  <div className="w-32 overflow-hidden rounded-xl border border-blue-400/60 bg-slate-950/80 shadow-lg">
+                    <div className="flex items-center justify-between border-b border-blue-400/40 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-blue-200">
+                      <span>{remoteParticipant.role === 'host' ? 'Host Camera' : 'Guest Camera'}</span>
+                      <span className="rounded-full bg-blue-500/20 px-1.5 py-0.5 text-blue-100">Remote</span>
+                    </div>
+                    <img src={remoteParticipant.cameraFrame} alt="Remote participant camera" className="h-24 w-full object-cover" />
+                  </div>
+                </div>
+              ) : null}
               {isScreenSharing ? (
                 <video ref={screenVideoRef} autoPlay playsInline muted className="h-full w-full object-contain" />
               ) : isChatMode ? (
