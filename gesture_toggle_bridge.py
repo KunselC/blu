@@ -125,6 +125,15 @@ class GestureToggleBridge:
                 self.message = "Missing dependencies. Install `opencv-python` and `mediapipe`."
             return
 
+        if not hasattr(mp, "solutions"):
+            with self._lock:
+                version = getattr(mp, "__version__", "unknown")
+                self.message = (
+                    "Installed `mediapipe` API is incompatible with this app "
+                    f"(detected {version}). Reinstall with `mediapipe==0.10.14`."
+                )
+            return
+
         drawing_utils = mp.solutions.drawing_utils
         hands_module = mp.solutions.hands
 

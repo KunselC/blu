@@ -95,7 +95,7 @@ fi
 
 echo "Ensuring Python dependencies are installed..."
 "$VENV_PYTHON" -m pip install --upgrade pip
-"$VENV_PYTHON" -m pip install opencv-python mediapipe
+"$VENV_PYTHON" -m pip install opencv-python "mediapipe==0.10.14"
 
 if [ ! -d "node_modules" ]; then
   echo "Installing Node dependencies..."
