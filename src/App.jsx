@@ -13,6 +13,7 @@ const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? 'http://localhost:3001'
 const GESTURE_EXIT_PULSE_URL = import.meta.env.VITE_GESTURE_EXIT_PULSE_URL ?? 'http://127.0.0.1:8765/pulse-exit'
 const DEFAULT_HOLD_DURATION = 900
 const CHAT_SELECTION_HOLD_DURATION = 3000
+const BOARD_CLEAR_HOLD_DURATION = 7000
 const MAX_DRAW_SEGMENTS = 6000
 const MAX_CHAT_MESSAGES = 200
 const MAX_TRANSCRIPT_LOG = 500
@@ -42,6 +43,7 @@ function App() {
   const screenStreamRef = useRef(null)
   const gestureTimeoutRef = useRef(null)
   const bridgeHoldRef = useRef({ fingerCount: 0, startAt: 0, timerId: null, rafId: null })
+  const boardClearHoldRef = useRef({ timerId: null })
   const lastBridgeGestureRef = useRef(GESTURE_STATES.EMPTY)
   const lastFingerDrawPointRef = useRef(null)
   const socketRef = useRef(null)
@@ -81,6 +83,9 @@ function App() {
       }
       if (bridgeHoldRef.current.rafId) {
         window.cancelAnimationFrame(bridgeHoldRef.current.rafId)
+      }
+      if (boardClearHoldRef.current.timerId) {
+        window.clearTimeout(boardClearHoldRef.current.timerId)
       }
     },
     [],
@@ -149,6 +154,11 @@ function App() {
     socket.on('drawing:segment', (payload) => {
       if (payload?.senderId === clientId || !payload?.segment) return
       setDrawingSegments((current) => [...current.slice(-(MAX_DRAW_SEGMENTS - 1)), payload.segment])
+    })
+
+    socket.on('drawing:clear', () => {
+      setDrawingSegments([])
+      lastFingerDrawPointRef.current = null
     })
 
     socket.on('transcript:append', (payload) => {
@@ -322,6 +332,13 @@ function App() {
     socketRef.current?.emit('drawing:segment', { segment, senderId: clientId })
   }, [clientId])
 
+  const clearWhiteboard = useCallback(() => {
+    lastFingerDrawPointRef.current = null
+    setDrawingSegments([])
+    socketRef.current?.emit('drawing:clear')
+    setGestureFlash('Whiteboard cleared')
+  }, [setGestureFlash])
+
   useEffect(() => {
     if (!isDrawing || fingersHeldUp !== 1 || !pointerTip) {
       lastFingerDrawPointRef.current = null
@@ -345,6 +362,22 @@ function App() {
     })
     lastFingerDrawPointRef.current = pointerTip
   }, [fingersHeldUp, handleSegmentDraw, isDrawing, pointerTip])
+
+  useEffect(() => {
+    if (fingersHeldUp === 5) {
+      if (boardClearHoldRef.current.timerId) return
+      boardClearHoldRef.current.timerId = window.setTimeout(() => {
+        clearWhiteboard()
+        boardClearHoldRef.current.timerId = null
+      }, BOARD_CLEAR_HOLD_DURATION)
+      return
+    }
+
+    if (boardClearHoldRef.current.timerId) {
+      window.clearTimeout(boardClearHoldRef.current.timerId)
+      boardClearHoldRef.current.timerId = null
+    }
+  }, [clearWhiteboard, fingersHeldUp])
 
   const modeLabel = useMemo(() => {
     switch (mode) {

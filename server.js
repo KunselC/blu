@@ -31,6 +31,11 @@ io.on('connection', (socket) => {
     socket.broadcast.emit('drawing:segment', payload)
   })
 
+  socket.on('drawing:clear', () => {
+    sessionState.drawingSegments = []
+    io.emit('drawing:clear')
+  })
+
   socket.on('transcript:append', (payload) => {
     if (typeof payload?.segment !== 'string') return
     const segment = payload.segment.trim()
