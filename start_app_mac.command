@@ -154,4 +154,4 @@ else
 fi
 
 echo "Starting Vite app..."
-VITE_SOCKET_URL="$SOCKET_URL" npm run dev -- --host 0.0.0.0
+VITE_SOCKET_URL="$SOCKET_URL" VITE_ROOM_ROLE="$ROLE" npm run dev -- --host 0.0.0.0
