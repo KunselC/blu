@@ -17,6 +17,8 @@ const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? SOCKET_URL;
 const GESTURE_EXIT_PULSE_URL =
   import.meta.env.VITE_GESTURE_EXIT_PULSE_URL ??
   "http://127.0.0.1:8765/pulse-exit";
+const GESTURE_FRAME_URL =
+  import.meta.env.VITE_GESTURE_FRAME_URL ?? "http://127.0.0.1:8765/frame.jpg";
 const TRANSLATE_API_URL =
   import.meta.env.VITE_TRANSLATE_API_URL ??
   `${SERVER_URL.replace(/^ws:/, "http:").replace(/^wss:/, "https:").replace(/\/$/, "")}/api/translate`;
@@ -26,6 +28,7 @@ const BOARD_CLEAR_HOLD_DURATION = 7000;
 const MAX_DRAW_SEGMENTS = 6000;
 const MAX_CHAT_MESSAGES = 200;
 const MAX_TRANSCRIPT_LOG = 500;
+const CAMERA_BROADCAST_INTERVAL = 1000;
 
 const SPEECH_RECOGNITION_LANGUAGE_BY_CODE = {
   en: "en-US",
@@ -101,6 +104,23 @@ async function translateText({ text, sourceLanguage, targetLanguage, signal }) {
   return translated;
 }
 
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+        return;
+      }
+      reject(new Error("Camera frame conversion failed."));
+    };
+    reader.onerror = () => {
+      reject(reader.error ?? new Error("Camera frame conversion failed."));
+    };
+    reader.readAsDataURL(blob);
+  });
+}
+
 function App() {
   const [mode, setMode] = useState(MODES.IDLE);
   const [translateEnabled, setTranslateEnabled] = useState(false);
@@ -117,6 +137,7 @@ function App() {
   const [chatMessages, setChatMessages] = useState([]);
   const [drawingSegments, setDrawingSegments] = useState([]);
   const [transcriptionLog, setTranscriptionLog] = useState([]);
+  const [cameraFramesById, setCameraFramesById] = useState({});
   const [gestureFeedback, setGestureFeedback] = useState({
     label: "Idle",
     active: false,
@@ -149,6 +170,7 @@ function App() {
   const applyingRemoteTranscriptRef = useRef(false);
   const translationCacheRef = useRef(new Map());
   const copyResetTimerRef = useRef(null);
+  const lastBroadcastFrameRef = useRef("");
   const getHoldDurationForFinger = useCallback(
     (fingerCount) =>
       fingerCount === 1 ? CHAT_SELECTION_HOLD_DURATION : DEFAULT_HOLD_DURATION,
@@ -181,6 +203,12 @@ function App() {
     }
     return error || translationError;
   }, [error, translationError]);
+
+  const remoteCameraFrame = useMemo(() => {
+    const entries = Object.entries(cameraFramesById);
+    const remoteEntry = entries.find(([senderId]) => senderId !== clientId);
+    return typeof remoteEntry?.[1] === "string" ? remoteEntry[1] : "";
+  }, [cameraFramesById, clientId]);
 
   const isMenuOpen = mode === MODES.MENU;
   const isDrawing = mode === MODES.DRAWING;
@@ -259,6 +287,7 @@ function App() {
   useEffect(() => {
     const socket = io(SOCKET_URL, { transports: ["websocket"] });
     socketRef.current = socket;
+    socket.emit("client:identify", { clientId });
 
     socket.on("session:snapshot", (snapshot) => {
       setChatMessages(
@@ -271,6 +300,11 @@ function App() {
         Array.isArray(snapshot.transcriptionLog)
           ? snapshot.transcriptionLog
           : [],
+      );
+      setCameraFramesById(
+        snapshot?.cameraFrames && typeof snapshot.cameraFrames === "object"
+          ? snapshot.cameraFrames
+          : {},
       );
       if (typeof snapshot.liveTranscript === "string") {
         applyingRemoteTranscriptRef.current = true;
@@ -322,11 +356,64 @@ function App() {
       lastTranscriptRef.current = payload.text;
     });
 
+    socket.on("camera:frame", (payload) => {
+      if (typeof payload?.senderId !== "string" || payload.senderId === clientId)
+        return;
+      setCameraFramesById((current) => {
+        const next = { ...current };
+        if (typeof payload?.frame === "string" && payload.frame) {
+          next[payload.senderId] = payload.frame;
+        } else {
+          delete next[payload.senderId];
+        }
+        return next;
+      });
+    });
+
     return () => {
+      socket.emit("camera:frame", {
+        senderId: clientId,
+        frame: null,
+      });
       socket.disconnect();
       socketRef.current = null;
     };
   }, [clientId, setTranscript]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const publishFrame = async () => {
+      try {
+        const response = await fetch(`${GESTURE_FRAME_URL}?t=${Date.now()}`, {
+          cache: "no-store",
+        });
+        if (!response.ok) return;
+
+        const blob = await response.blob();
+        const frame = await blobToDataUrl(blob);
+        if (cancelled || !frame || frame === lastBroadcastFrameRef.current) {
+          return;
+        }
+
+        lastBroadcastFrameRef.current = frame;
+        socketRef.current?.emit("camera:frame", {
+          senderId: clientId,
+          frame,
+        });
+      } catch {
+        // Keep collaboration working even if the local Python frame is unavailable.
+      }
+    };
+
+    publishFrame();
+    const intervalId = window.setInterval(publishFrame, CAMERA_BROADCAST_INTERVAL);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [clientId]);
 
   useEffect(() => {
     if (!translateEnabled) {
@@ -909,6 +996,22 @@ function App() {
           <section className="flex min-h-0 flex-col rounded-2xl bg-slate-900/80 p-4 text-xs text-slate-200 shadow-lg ring-1 ring-slate-700/60">
             <h2 className="mb-2 font-semibold text-slate-100">Camera Feed</h2>
             <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl border border-dashed border-slate-600 bg-slate-800/60">
+              <div className="absolute right-3 top-3 z-20 w-40 overflow-hidden rounded-lg border border-slate-600 bg-slate-950/80 shadow-lg">
+                <div className="border-b border-slate-700 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-slate-300">
+                  Other Participant
+                </div>
+                {remoteCameraFrame ? (
+                  <img
+                    src={remoteCameraFrame}
+                    alt="Other participant camera"
+                    className="h-24 w-full object-cover"
+                  />
+                ) : (
+                  <div className="flex h-24 items-center justify-center px-2 text-center text-[10px] text-slate-400">
+                    Waiting for remote camera...
+                  </div>
+                )}
+              </div>
               {isScreenSharing ? (
                 <video
                   ref={screenVideoRef}

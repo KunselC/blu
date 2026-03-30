@@ -50,7 +50,10 @@ const sessionState = {
   drawingSegments: [],
   transcriptionLog: [],
   liveTranscript: "",
+  cameraFrames: {},
 };
+
+const clientIdBySocketId = new Map();
 
 function setCorsHeaders(response) {
   response.setHeader("Access-Control-Allow-Origin", "*");
@@ -140,6 +143,11 @@ const io = new Server(httpServer, {
 io.on("connection", (socket) => {
   socket.emit("session:snapshot", sessionState);
 
+  socket.on("client:identify", (payload) => {
+    if (typeof payload?.clientId !== "string") return;
+    clientIdBySocketId.set(socket.id, payload.clientId);
+  });
+
   socket.on("chat:message", (payload) => {
     sessionState.chatMessages = [
       ...sessionState.chatMessages.slice(-199),
@@ -177,6 +185,41 @@ io.on("connection", (socket) => {
     if (typeof payload?.text !== "string") return;
     sessionState.liveTranscript = payload.text;
     socket.broadcast.emit("transcript:update", payload);
+  });
+
+  socket.on("camera:frame", (payload) => {
+    const senderId =
+      typeof payload?.senderId === "string"
+        ? payload.senderId
+        : clientIdBySocketId.get(socket.id) ?? "";
+    if (!senderId) return;
+
+    const frame =
+      typeof payload?.frame === "string" && payload.frame
+        ? payload.frame
+        : null;
+
+    if (frame) {
+      sessionState.cameraFrames[senderId] = frame;
+    } else {
+      delete sessionState.cameraFrames[senderId];
+    }
+
+    socket.broadcast.emit("camera:frame", {
+      senderId,
+      frame,
+    });
+  });
+
+  socket.on("disconnect", () => {
+    const clientId = clientIdBySocketId.get(socket.id);
+    clientIdBySocketId.delete(socket.id);
+    if (!clientId) return;
+    delete sessionState.cameraFrames[clientId];
+    socket.broadcast.emit("camera:frame", {
+      senderId: clientId,
+      frame: null,
+    });
   });
 });
 
